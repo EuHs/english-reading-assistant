@@ -341,13 +341,30 @@ ERA.UI.showBook = async function (tab = 'words') {
     : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${p.id}" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div><div class="meta">— ${UI.esc((p.article || {}).title || '')}</div></div>`).join('');
   const card = UI.card('我的生词本', `
     <div class="btns" style="margin-top:0"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
-    <div class="btns"><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
+    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
     <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
   card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
   card.querySelector('[data-x=sync]').onclick = async () => { const r = await ERA.Store.flush(); UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成（${r.ok} 条）` : `仍有 ${r.pending} 条未同步：${r.error}`); UI.showBook(tab); };
+  card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
   card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
   card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');
+};
+
+/** Show or hide the 生词 / 好词好句 marks (the saved entries are untouched). */
+ERA.setBookMarksVisible = async function (show, persist) {
+  document.documentElement.classList.toggle('era-hide-book', !show);
+  if (persist) {
+    const cfg = await ERA.P.getConfig();
+    cfg.ui.showBookMarks = show;
+    await ERA.P.setConfig(cfg);
+  }
+  return show;
+};
+ERA.toggleBookMarks = async function () {
+  const show = await ERA.setBookMarksVisible(document.documentElement.classList.contains('era-hide-book'), true);
+  ERA.UI.toast(show ? '已显示生词 / 好词好句标记' : '已隐藏生词 / 好词好句标记');
+  return show;
 };
 
 ERA.download = function (name, text, type) {
@@ -364,6 +381,7 @@ ERA.init = async function (platform, { restore = true } = {}) {
   ERA.P = platform;
   const UI = ERA.UI;
   const cfg = await platform.getConfig();
+  ERA.setBookMarksVisible(cfg.ui.showBookMarks !== false);
   let touchTimer = null;
   const onSelect = async () => {
     const c = await platform.getConfig();
@@ -389,6 +407,7 @@ ERA.init = async function (platform, { restore = true } = {}) {
   });
   document.addEventListener('click', (e) => {
     const m = e.target.closest && e.target.closest('.era-mark');
+    if (m && /era-(vocab|phrase)/.test(m.className) && document.documentElement.classList.contains('era-hide-book')) return;
     if (m && window.getSelection().isCollapsed) ERA.Actions.markMenu(m.dataset.eraId);
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { UI.hideToolbar(); UI.closeCards(); } });
@@ -405,6 +424,7 @@ ERA.command = function (cmd, selectionText) {
   UI.mount();
   if (cmd === 'book') return UI.showBook();
   if (cmd === 'settings') return ERA.Settings.openPanel();
+  if (cmd === 'marks') return ERA.toggleBookMarks();
   if (!UI.captureSelection()) {
     if (!selectionText) return UI.toast('未检测到选中文本');
     UI.state = { range: null, text: selectionText.trim(), sentence: selectionText.trim() };

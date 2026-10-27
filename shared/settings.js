@@ -50,7 +50,7 @@ ERA.Settings = {
       <div class="sec"><h4>朗读与界面</h4>
         <div class="row"><label>语音</label><select name="tts.voice"><option value="">自动</option>${voices.map((v) => opt(v.name, cfg.tts.voice, v.name + ' (' + v.lang + ')')).join('')}</select><button class="btn gh" data-x="tts">试听</button></div>
         <div class="row"><label>语速</label><input type="text" name="tts.rate" value="${esc(cfg.tts.rate)}" style="width:80px"></div>
-        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）' })
+        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
           .map(([k, l]) => `<div class="row"><label><input type="checkbox" name="ui.${k}" ${cfg.ui[k] ? 'checked' : ''}> ${l}</label></div>`).join('')}
       </div>
 

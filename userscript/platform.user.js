@@ -140,6 +140,7 @@ function decoratePdfLinks(root) {
   GMX.menu('📒 生词本 / 好词好句', () => ERA.UI.showBook());
   GMX.menu('📂 打开本地 PDF', pickLocalPdf);
   GMX.menu('📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); });
+  GMX.menu('👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks());
   GMX.menu('🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); });
   if (document.contentType === 'application/pdf') openPdfOverlay(location.href);
   decoratePdfLinks();

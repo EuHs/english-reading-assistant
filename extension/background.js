@@ -26,6 +26,7 @@ function createMenus() {
     api.contextMenus.create({ id: 'era-open-pdf-link', title: '用学习阅读器打开此 PDF 链接', contexts: ['link'] });
     api.contextMenus.create({ id: 'era-open-pdf-page', title: '用学习阅读器打开当前 PDF', contexts: ['page'] });
     api.contextMenus.create({ id: 'era-book', title: '我的生词本', contexts: ['page'] });
+    api.contextMenus.create({ id: 'era-marks', title: '显示 / 隐藏生词与好句标记', contexts: ['page'] });
   });
 }
 api.runtime.onInstalled.addListener(createMenus);

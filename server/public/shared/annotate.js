@@ -83,7 +83,6 @@ ERA.Annot = {
     }
     const marks = document.querySelectorAll(`.era-mark[data-era-id="${ann.id}"]`);
     if (ann.note && marks.length) marks[marks.length - 1].classList.add('era-has-note');
-    if (marks.length) marks[marks.length - 1].classList.add('era-last');
   },
 
   unwrap(id) {
@@ -160,14 +159,13 @@ ERA.injectMarkStyle = function () {
   .era-note{background:color-mix(in srgb,var(--era-c) 35%,transparent)!important;border-bottom:2px dashed var(--era-c)}
   .era-has-note::after{content:"✎";font-size:10px;vertical-align:super;color:#d97706;opacity:1}
   .textLayer .era-has-note::after{color:#d97706}
-  .era-vocab{text-decoration:underline wavy #e11d48 1.5px!important;text-underline-offset:4px;background:rgba(225,29,72,.07)!important}
-  .era-phrase{text-decoration:underline double #7c3aed!important;text-underline-offset:4px;background:rgba(124,58,237,.07)!important}
-  .era-vocab.era-last::after{content:"生";font:bold 9px/1 sans-serif;color:#fff;background:#e11d48;border-radius:3px;padding:1px 2px;margin-left:1px;vertical-align:super}
-  .era-phrase.era-last::after{content:"★";font-size:10px;color:#7c3aed;vertical-align:super;margin-left:1px}
-  .textLayer .era-vocab{text-decoration:none!important;border-bottom:2px dotted #e11d48;background:rgba(225,29,72,.18)!important}
-  .textLayer .era-phrase{text-decoration:none!important;border-bottom:3px double #7c3aed;background:rgba(124,58,237,.16)!important}
-  .textLayer .era-last::after{color:#7c3aed}
-  .textLayer .era-vocab.era-last::after{color:#fff}
+  /* 生词 / 好词好句: drawn as a background image inside the text's own box, so nothing is
+     inserted into the text, nothing changes layout and nothing paints over neighbouring lines */
+  .era-vocab{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='M0 2.2 Q1.5 0 3 2.2 T6 2.2' fill='none' stroke='%23e11d48' stroke-width='1.1'/%3E%3C/svg%3E") repeat-x left bottom/6px 3px!important;text-decoration:none!important}
+  .era-phrase{background:linear-gradient(#7c3aed,#7c3aed) left calc(100% - 3px)/100% 1px no-repeat,linear-gradient(#7c3aed,#7c3aed) left bottom/100% 1px no-repeat!important;text-decoration:none!important}
+  .era-vocab:hover{background-color:rgba(225,29,72,.12)!important}
+  .era-phrase:hover{background-color:rgba(124,58,237,.12)!important}
+  html.era-hide-book .era-vocab,html.era-hide-book .era-phrase{background:none!important;cursor:text}
   .era-flash{animation:era-flash 1.2s ease 2}
   @keyframes era-flash{50%{outline:3px solid #f59e0b}}`;
   (document.head || document.documentElement).appendChild(st);

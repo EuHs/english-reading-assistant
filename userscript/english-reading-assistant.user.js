@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.1.0
+// @version      1.2.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -33,7 +33,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.1.0';
+ERA.VERSION = '1.2.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -61,6 +61,7 @@ ERA.defaultConfig = function () {
       autoAnalyzeOnAdd: true, // run AI word analysis when adding to vocab book
       translateSentenceOnAdd: true,
       pdfIntercept: true, // extension: open .pdf links in the study reader
+      showBookMarks: true, // wavy / double underline under saved 生词 and 好词好句
     },
     tts: { lang: 'en-US', voice: '', rate: 0.95 },
     ai: {
@@ -651,7 +652,6 @@ ERA.Annot = {
     }
     const marks = document.querySelectorAll(`.era-mark[data-era-id="${ann.id}"]`);
     if (ann.note && marks.length) marks[marks.length - 1].classList.add('era-has-note');
-    if (marks.length) marks[marks.length - 1].classList.add('era-last');
   },
 
   unwrap(id) {
@@ -728,14 +728,13 @@ ERA.injectMarkStyle = function () {
   .era-note{background:color-mix(in srgb,var(--era-c) 35%,transparent)!important;border-bottom:2px dashed var(--era-c)}
   .era-has-note::after{content:"✎";font-size:10px;vertical-align:super;color:#d97706;opacity:1}
   .textLayer .era-has-note::after{color:#d97706}
-  .era-vocab{text-decoration:underline wavy #e11d48 1.5px!important;text-underline-offset:4px;background:rgba(225,29,72,.07)!important}
-  .era-phrase{text-decoration:underline double #7c3aed!important;text-underline-offset:4px;background:rgba(124,58,237,.07)!important}
-  .era-vocab.era-last::after{content:"生";font:bold 9px/1 sans-serif;color:#fff;background:#e11d48;border-radius:3px;padding:1px 2px;margin-left:1px;vertical-align:super}
-  .era-phrase.era-last::after{content:"★";font-size:10px;color:#7c3aed;vertical-align:super;margin-left:1px}
-  .textLayer .era-vocab{text-decoration:none!important;border-bottom:2px dotted #e11d48;background:rgba(225,29,72,.18)!important}
-  .textLayer .era-phrase{text-decoration:none!important;border-bottom:3px double #7c3aed;background:rgba(124,58,237,.16)!important}
-  .textLayer .era-last::after{color:#7c3aed}
-  .textLayer .era-vocab.era-last::after{color:#fff}
+  /* 生词 / 好词好句: drawn as a background image inside the text's own box, so nothing is
+     inserted into the text, nothing changes layout and nothing paints over neighbouring lines */
+  .era-vocab{background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='M0 2.2 Q1.5 0 3 2.2 T6 2.2' fill='none' stroke='%23e11d48' stroke-width='1.1'/%3E%3C/svg%3E") repeat-x left bottom/6px 3px!important;text-decoration:none!important}
+  .era-phrase{background:linear-gradient(#7c3aed,#7c3aed) left calc(100% - 3px)/100% 1px no-repeat,linear-gradient(#7c3aed,#7c3aed) left bottom/100% 1px no-repeat!important;text-decoration:none!important}
+  .era-vocab:hover{background-color:rgba(225,29,72,.12)!important}
+  .era-phrase:hover{background-color:rgba(124,58,237,.12)!important}
+  html.era-hide-book .era-vocab,html.era-hide-book .era-phrase{background:none!important;cursor:text}
   .era-flash{animation:era-flash 1.2s ease 2}
   @keyframes era-flash{50%{outline:3px solid #f59e0b}}`;
   (document.head || document.documentElement).appendChild(st);
@@ -1245,7 +1244,7 @@ ERA.Settings = {
       <div class="sec"><h4>朗读与界面</h4>
         <div class="row"><label>语音</label><select name="tts.voice"><option value="">自动</option>${voices.map((v) => opt(v.name, cfg.tts.voice, v.name + ' (' + v.lang + ')')).join('')}</select><button class="btn gh" data-x="tts">试听</button></div>
         <div class="row"><label>语速</label><input type="text" name="tts.rate" value="${esc(cfg.tts.rate)}" style="width:80px"></div>
-        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）' })
+        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
           .map(([k, l]) => `<div class="row"><label><input type="checkbox" name="ui.${k}" ${cfg.ui[k] ? 'checked' : ''}> ${l}</label></div>`).join('')}
       </div>
 
@@ -1718,13 +1717,30 @@ ERA.UI.showBook = async function (tab = 'words') {
     : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${p.id}" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div><div class="meta">— ${UI.esc((p.article || {}).title || '')}</div></div>`).join('');
   const card = UI.card('我的生词本', `
     <div class="btns" style="margin-top:0"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
-    <div class="btns"><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
+    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
     <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
   card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
   card.querySelector('[data-x=sync]').onclick = async () => { const r = await ERA.Store.flush(); UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成（${r.ok} 条）` : `仍有 ${r.pending} 条未同步：${r.error}`); UI.showBook(tab); };
+  card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
   card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
   card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');
+};
+
+/** Show or hide the 生词 / 好词好句 marks (the saved entries are untouched). */
+ERA.setBookMarksVisible = async function (show, persist) {
+  document.documentElement.classList.toggle('era-hide-book', !show);
+  if (persist) {
+    const cfg = await ERA.P.getConfig();
+    cfg.ui.showBookMarks = show;
+    await ERA.P.setConfig(cfg);
+  }
+  return show;
+};
+ERA.toggleBookMarks = async function () {
+  const show = await ERA.setBookMarksVisible(document.documentElement.classList.contains('era-hide-book'), true);
+  ERA.UI.toast(show ? '已显示生词 / 好词好句标记' : '已隐藏生词 / 好词好句标记');
+  return show;
 };
 
 ERA.download = function (name, text, type) {
@@ -1741,6 +1757,7 @@ ERA.init = async function (platform, { restore = true } = {}) {
   ERA.P = platform;
   const UI = ERA.UI;
   const cfg = await platform.getConfig();
+  ERA.setBookMarksVisible(cfg.ui.showBookMarks !== false);
   let touchTimer = null;
   const onSelect = async () => {
     const c = await platform.getConfig();
@@ -1766,6 +1783,7 @@ ERA.init = async function (platform, { restore = true } = {}) {
   });
   document.addEventListener('click', (e) => {
     const m = e.target.closest && e.target.closest('.era-mark');
+    if (m && /era-(vocab|phrase)/.test(m.className) && document.documentElement.classList.contains('era-hide-book')) return;
     if (m && window.getSelection().isCollapsed) ERA.Actions.markMenu(m.dataset.eraId);
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { UI.hideToolbar(); UI.closeCards(); } });
@@ -1782,6 +1800,7 @@ ERA.command = function (cmd, selectionText) {
   UI.mount();
   if (cmd === 'book') return UI.showBook();
   if (cmd === 'settings') return ERA.Settings.openPanel();
+  if (cmd === 'marks') return ERA.toggleBookMarks();
   if (!UI.captureSelection()) {
     if (!selectionText) return UI.toast('未检测到选中文本');
     UI.state = { range: null, text: selectionText.trim(), sentence: selectionText.trim() };
@@ -2084,6 +2103,7 @@ function decoratePdfLinks(root) {
   GMX.menu('📒 生词本 / 好词好句', () => ERA.UI.showBook());
   GMX.menu('📂 打开本地 PDF', pickLocalPdf);
   GMX.menu('📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); });
+  GMX.menu('👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks());
   GMX.menu('🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); });
   if (document.contentType === 'application/pdf') openPdfOverlay(location.href);
   decoratePdfLinks();
