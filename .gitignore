@@ -1,0 +1,12 @@
+node_modules/
+.DS_Store
+*.log
+# secrets / local data
+.env
+server/.env
+server/data/
+deploy/server.env
+deploy/era-config.json
+# generated
+safari/
+dist/*.zip

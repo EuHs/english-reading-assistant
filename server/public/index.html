@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>英语阅读助手 · 生词本</title>
+<link rel="icon" href="icon.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/words"><img src="icon.png" alt=""><span>英语阅读助手</span></a>
+  <nav id="nav">
+    <a href="#/words">生词本</a>
+    <a href="#/phrases">好词好句</a>
+    <a href="#/roots">词根</a>
+    <a href="#/articles">文章</a>
+    <a href="#/quiz">测验</a>
+    <a href="#/wrong">错题集</a>
+    <a href="#/stats">统计</a>
+    <a href="#/reader">阅读器</a>
+    <a href="#/settings">设置</a>
+  </nav>
+</header>
+<main id="app"></main>
+<div id="modal" class="modal" hidden><div class="modal-box"><button class="modal-x" title="关闭">×</button><div class="modal-body"></div></div></div>
+<script src="lib/pdf.min.js"></script>
+<script src="shared/config.js"></script>
+<script src="shared/dict.js"></script>
+<script src="shared/ai.js"></script>
+<script src="shared/text.js"></script>
+<script src="shared/annotate.js"></script>
+<script src="shared/store.js"></script>
+<script src="shared/ui.js"></script>
+<script src="shared/settings.js"></script>
+<script src="shared/actions.js"></script>
+<script src="shared/pdfreader.js"></script>
+<script src="web-platform.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>英语阅读助手 · PDF</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header class="bar">
+  <label class="btn" title="打开本地 PDF">📂 打开<input type="file" id="file" accept="application/pdf,.pdf" hidden></label>
+  <span id="title" class="title">拖入或打开一个 PDF 开始阅读</span>
+  <span class="grow"></span>
+  <button class="btn" id="zoomOut" title="缩小">－</button>
+  <span id="zoomVal">100%</span>
+  <button class="btn" id="zoomIn" title="放大">＋</button>
+  <input id="pageNo" type="number" min="1" value="1" title="跳页"><span id="pageCount">/ 0</span>
+  <button class="btn" id="book">📒 生词本</button>
+  <button class="btn" id="settings">⚙︎</button>
+</header>
+<main id="reader"></main>
+<div id="drop" hidden>松开以打开 PDF</div>
+<script src="../lib/pdf.min.js"></script>
+<script src="../shared/config.js"></script>
+<script src="../shared/dict.js"></script>
+<script src="../shared/ai.js"></script>
+<script src="../shared/text.js"></script>
+<script src="../shared/annotate.js"></script>
+<script src="../shared/store.js"></script>
+<script src="../shared/ui.js"></script>
+<script src="../shared/settings.js"></script>
+<script src="../shared/actions.js"></script>
+<script src="../shared/pdfreader.js"></script>
+<script src="../content/platform.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>

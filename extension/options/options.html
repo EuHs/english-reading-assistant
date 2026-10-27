@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>英语阅读助手 · 设置</title><link rel="stylesheet" href="common.css">
+<style>.page{max-width:880px;margin:0 auto;padding:16px}</style></head>
+<body><div class="page">
+<h2>📖 英语阅读助手 <span class="muted" id="ver"></span></h2>
+<div class="tabs"><button data-t="settings" class="on">设置</button><button data-t="words">生词本</button><button data-t="phrases">好词好句</button><button data-t="help">使用说明</button></div>
+<div id="settings"></div>
+<div id="words" hidden></div>
+<div id="phrases" hidden></div>
+<div id="help" hidden>
+  <div class="sec"><h4>快速上手</h4>
+  <ol>
+    <li>网页或 PDF 中选中文本 → 弹出工具条：译 / 🔊 / 高亮 / 下划线 / 批注 / ＋生词 / ★好句 / 语法。</li>
+    <li>右键选中文本 → “英语阅读助手” 菜单：加入生词本、加入好词好句、语法分析等。</li>
+    <li>打开 .pdf 链接会自动进入学习阅读器（可在设置中关闭）；也可在弹窗中打开本地 PDF。</li>
+    <li>AI：在“设置 → AI 接口”填入 OpenAI 兼容接口，或配置本机跳板（one-api/new-api/LiteLLM），或直接使用服务器端 AI。</li>
+    <li>服务器：填写服务器地址与 API Token 并启用，生词和好词好句会自动同步，可在网页端测验与统计。</li>
+  </ol></div>
+</div>
+</div>
+<script src="../shared/config.js"></script>
+<script src="../shared/dict.js"></script>
+<script src="../shared/ai.js"></script>
+<script src="../shared/text.js"></script>
+<script src="../shared/annotate.js"></script>
+<script src="../shared/store.js"></script>
+<script src="../shared/ui.js"></script>
+<script src="../shared/settings.js"></script>
+<script src="../shared/actions.js"></script>
+<script src="../content/platform.js"></script>
+<script src="options.js"></script>
+</body></html>

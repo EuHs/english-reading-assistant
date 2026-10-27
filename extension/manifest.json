@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "英语阅读助手 English Reading Assistant",
+  "short_name": "ERA",
+  "version": "1.0.0",
+  "description": "PDF/网页英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根时态分析、语法分析、生词本与服务器同步。",
+  "permissions": ["storage", "unlimitedStorage", "contextMenus", "tabs", "scripting", "webNavigation"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": [
+        "shared/config.js", "shared/dict.js", "shared/ai.js", "shared/text.js", "shared/annotate.js",
+        "shared/store.js", "shared/ui.js", "shared/settings.js", "shared/actions.js", "content/platform.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "英语阅读助手",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" }
+  },
+  "options_ui": { "page": "options/options.html", "open_in_tab": true },
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "web_accessible_resources": [{ "resources": ["viewer/viewer.html"], "matches": ["<all_urls>"] }]
+}
