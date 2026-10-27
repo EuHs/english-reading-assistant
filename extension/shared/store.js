@@ -35,13 +35,68 @@ ERA.Store = {
     return this.enqueue('phrase', payload);
   },
 
-  async removeWord(id) { await ERA.P.setData('vocab', (await this.words()).filter((x) => x.id !== id)); },
-  async removePhrase(id) { await ERA.P.setData('phrases', (await this.phrases()).filter((x) => x.id !== id)); },
+  /** Delete a whole entry from the book (book panel / options page); also deleted on the server. */
+  async removeWord(id) {
+    const list = await this.words();
+    const e = list.find((x) => x.id === id);
+    await ERA.P.setData('vocab', list.filter((x) => x.id !== id));
+    if (e) return this.enqueue('unword', { lemma: e.lemma });
+  },
+  async removePhrase(id) {
+    const list = await this.phrases();
+    const e = list.find((x) => x.id === id);
+    await ERA.P.setData('phrases', list.filter((x) => x.id !== id));
+    if (e) return this.enqueue('unphrase', { text: e.text });
+  },
+
+  normPhrase: (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[\s"'“”‘’.,;:!?]+$/g, '').replace(/^[\s"'“”‘’]+/, ''),
+
+  /** Bookmark-style state on the current article: 'none' | 'other' (saved from another article) | 'here'. */
+  async wordState(lemma, url) {
+    lemma = String(lemma || '').toLowerCase();
+    if (ERA.P.remoteBook) {
+      const r = await ERA.serverCall('POST', '/api/book/status', { words: [lemma], article_url: url });
+      return r.words[lemma].state;
+    }
+    const e = (await this.words()).find((x) => x.lemma === lemma);
+    if (!e) return 'none';
+    return (e.occurrences || []).some((o) => o.article && o.article.url === url) ? 'here' : 'other';
+  },
+  async phraseState(text, url) {
+    if (ERA.P.remoteBook) {
+      const r = await ERA.serverCall('POST', '/api/book/status', { phrases: [text], article_url: url });
+      return r.phrases[text].state;
+    }
+    const n = this.normPhrase(text);
+    const hits = (await this.phrases()).filter((x) => this.normPhrase(x.text) === n);
+    if (!hits.length) return 'none';
+    return hits.some((x) => x.article && x.article.url === url) ? 'here' : 'other';
+  },
+
+  /** Cancel (like un-starring): drops this article's occurrence; the word disappears when none are left. */
+  async cancelWord(lemma, url) {
+    lemma = String(lemma || '').toLowerCase();
+    const list = await this.words();
+    const e = list.find((x) => x.lemma === lemma);
+    if (e) {
+      e.occurrences = (e.occurrences || []).filter((o) => !(o.article && o.article.url === url));
+      await ERA.P.setData('vocab', e.occurrences.length ? list : list.filter((x) => x !== e));
+    }
+    return this.enqueue('unword', { lemma, article_url: url });
+  },
+  async cancelPhrase(text, url) {
+    const n = this.normPhrase(text);
+    await ERA.P.setData('phrases', (await this.phrases()).filter((x) => !(this.normPhrase(x.text) === n && x.article && x.article.url === url)));
+    return this.enqueue('unphrase', { text, article_url: url });
+  },
 
   async enqueue(kind, payload) {
     const cfg = await ERA.P.getConfig();
     if (!cfg.server.enabled || !cfg.server.autoSync) return { synced: false, reason: 'server-disabled' };
-    const q = (await ERA.P.getData('syncQueue', [])) || [];
+    let q = (await ERA.P.getData('syncQueue', [])) || [];
+    // a cancel makes a still-pending add for the same item pointless
+    if (kind === 'unword') q = q.filter((i) => !(i.kind === 'word' && (i.payload.lemma || i.payload.word || '').toLowerCase() === payload.lemma && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
+    if (kind === 'unphrase') q = q.filter((i) => !(i.kind === 'phrase' && this.normPhrase(i.payload.text) === this.normPhrase(payload.text) && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     q.push({ id: ERA.uid(), kind, payload });
     await ERA.P.setData('syncQueue', q);
     return this.flush(cfg);
@@ -56,7 +111,12 @@ ERA.Store = {
     let ok = 0, lastErr = '';
     for (const item of q) {
       try {
-        await ERA.serverCall('POST', item.kind === 'word' ? cfg.server.endpoints.words : cfg.server.endpoints.phrases, item.payload, cfg);
+        const ep = item.kind === 'word' || item.kind === 'unword' ? cfg.server.endpoints.words : cfg.server.endpoints.phrases;
+        if (item.kind === 'word' || item.kind === 'phrase') await ERA.serverCall('POST', ep, item.payload, cfg);
+        else {
+          const qs = Object.entries(item.payload).filter(([, v]) => v).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+          await ERA.serverCall('DELETE', ep + '?' + qs, null, cfg);
+        }
         ok++;
       } catch (e) { lastErr = e.message; left.push(item); }
     }

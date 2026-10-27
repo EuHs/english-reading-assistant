@@ -10,6 +10,7 @@
 
   window.WebP = {
     name: 'web',
+    remoteBook: true, // book state and cancels go straight to this server
     ls,
     token() { return localStorage.getItem(TOKEN_KEY) || ''; },
     setToken(t) { localStorage.setItem(TOKEN_KEY, t); },

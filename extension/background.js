@@ -6,8 +6,8 @@ const VIEWER = api.runtime.getURL('viewer/viewer.html');
 
 const MENUS = [
   ['translate', '翻译 / 查词「%s」'],
-  ['vocab', '加入生词本'],
-  ['phrase', '加入好词好句'],
+  ['vocab', '☆ 加入生词本'],
+  ['phrase', '☆ 加入好词好句'],
   ['grammar', '语法分析（主谓宾定状补）'],
   ['sep1', null],
   ['hl', '高亮'],
@@ -79,6 +79,14 @@ api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'lookup') {
     loadDict().then(([dict, roots]) => sendResponse(ERA.dictLookup(dict, roots, msg.word))).catch((e) => sendResponse(null));
     return true;
+  }
+  if (msg.type === 'menu-state') {
+    const V = { none: '☆ 加入生词本', other: '☆ 加入生词本（已收录，追加本句）', here: '★ 已在生词本 — 点击取消' };
+    const P = { none: '☆ 加入好词好句', other: '☆ 加入好词好句（已收录，追加本处）', here: '★ 已在好词好句 — 点击取消' };
+    const upd = (id, props) => { try { api.contextMenus.update(id, props, () => void api.runtime.lastError); } catch (e) { /* older Safari */ } };
+    upd('era-vocab', { title: V[msg.vocab] || V.none, visible: !!msg.single });
+    upd('era-phrase', { title: P[msg.phrase] || P.none });
+    return false;
   }
   if (msg.type === 'open-viewer') {
     api.tabs.create({ url: VIEWER + (msg.url ? '?file=' + encodeURIComponent(msg.url) : '') });

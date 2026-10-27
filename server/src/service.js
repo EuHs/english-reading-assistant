@@ -205,11 +205,47 @@ export class Service {
 
   deleteWord(id) { return this.db.prepare('DELETE FROM words WHERE id=?').run(+id).changes; }
 
+  /** Cancel a saved word (bookmark-style). With article_url only that article's occurrences go; the word goes when none are left. */
+  removeWordBy({ lemma, word, article_url } = {}) {
+    const l = canonicalLemma(word || lemma, lemma);
+    const db = this.db;
+    const w = l && db.prepare('SELECT id FROM words WHERE lemma=?').get(l);
+    if (!w) return { removed: null, lemma: l };
+    if (article_url) {
+      db.prepare('DELETE FROM occurrences WHERE word_id=? AND article_id IN (SELECT id FROM articles WHERE url=?)').run(w.id, article_url);
+      const left = db.prepare('SELECT COUNT(*) n FROM occurrences WHERE word_id=?').get(w.id).n;
+      if (left > 0) return { removed: 'occurrence', remaining: left, lemma: l };
+    }
+    db.prepare('DELETE FROM words WHERE id=?').run(w.id);
+    return { removed: 'word', lemma: l };
+  }
+
+  /** none: not saved · other: saved from another article · here: saved from this article */
+  bookStatus({ words = [], phrases = [], article_url } = {}) {
+    const db = this.db;
+    const state = (id, occTable, key) => {
+      if (!id) return 'none';
+      if (!article_url) return 'other';
+      const hit = db.prepare(`SELECT 1 FROM ${occTable} o JOIN articles a ON a.id=o.article_id WHERE o.${key}=? AND a.url=? LIMIT 1`).get(id, article_url);
+      return hit ? 'here' : 'other';
+    };
+    const out = { words: {}, phrases: {} };
+    for (const w of words.slice(0, 200)) {
+      const row = db.prepare('SELECT id, lemma FROM words WHERE lemma=?').get(canonicalLemma(w));
+      out.words[w] = { state: state(row && row.id, 'occurrences', 'word_id'), lemma: row ? row.lemma : canonicalLemma(w) };
+    }
+    for (const t of phrases.slice(0, 200)) {
+      const row = db.prepare('SELECT id FROM phrases WHERE norm=?').get(this.normPhrase(t));
+      out.phrases[t] = { state: state(row && row.id, 'phrase_occurrences', 'phrase_id') };
+    }
+    return out;
+  }
+
   /* ---------- phrases ---------- */
   addPhrase(p) {
     const text = String(p.text || '').replace(/\s+/g, ' ').trim();
     if (!text) throw Object.assign(new Error('text 不能为空'), { status: 400 });
-    const norm = text.toLowerCase().replace(/[\s"'“”‘’.,;:!?]+$/g, '').replace(/^[\s"'“”‘’]+/, '');
+    const norm = this.normPhrase(text);
     const db = this.db;
     const article = this.upsertArticle(p.article);
     return tx(db, () => {
@@ -241,6 +277,23 @@ export class Service {
   }
 
   deletePhrase(id) { return this.db.prepare('DELETE FROM phrases WHERE id=?').run(+id).changes; }
+
+  normPhrase(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[\s"'“”‘’.,;:!?]+$/g, '').replace(/^[\s"'“”‘’]+/, '');
+  }
+
+  removePhraseBy({ text, article_url } = {}) {
+    const db = this.db;
+    const p = db.prepare('SELECT id FROM phrases WHERE norm=?').get(this.normPhrase(text));
+    if (!p) return { removed: null };
+    if (article_url) {
+      db.prepare('DELETE FROM phrase_occurrences WHERE phrase_id=? AND article_id IN (SELECT id FROM articles WHERE url=?)').run(p.id, article_url);
+      const left = db.prepare('SELECT COUNT(*) n FROM phrase_occurrences WHERE phrase_id=?').get(p.id).n;
+      if (left > 0) return { removed: 'occurrence', remaining: left };
+    }
+    db.prepare('DELETE FROM phrases WHERE id=?').run(p.id);
+    return { removed: 'phrase' };
+  }
 
   /* ---------- roots / articles / categories ---------- */
   listRoots({ q, type } = {}) {

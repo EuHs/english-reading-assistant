@@ -22,6 +22,7 @@
   - **加入生词本**：单词 + 词典释义 + AI 词根时态 + 所属语句 + 语句翻译 + 文章信息
   - **加入好词好句**：词 / 词组 / 句子 + 翻译 + 所属语句及翻译 + 文章信息
   - **语法分析**：划句后浮动面板，主语/谓语/宾语/定语/状语/补语/表语/同位语 **彩色高亮 + 图例**，含翻译、句型、主干、从句表、讲解
+- **收藏式状态与取消**：加入生词 / 好词好句后，原文上留下专属标记——生词为**红色波浪线 + “生”角标**，好词好句为**紫色双下划线 + ★**，与高亮（底色）、下划线（实线）、批注（虚线 + ✎）区分。工具条、卡片和右键菜单按钮像浏览器收藏按钮一样显示状态：☆ 未加入 / ☆+ 已从其他文章收录（点击追加本处）/ ★ 本文已加入（点击取消）。点击原文上的标记也可取消；取消会同步删除服务器上本文的这条出处，单词不再有任何出处时整条删除
 - 自动获取文章信息：题目、作者、出版时间、期刊/来源、DOI、字数与预计阅读时长、阅读时间（网页取 `citation_*` / Open Graph / JSON-LD / byline；PDF 取文档元数据 + 首页最大字号标题 + "Published:" 日期 + DOI）
 - PDF 学习阅读器：扩展自动接管 `.pdf` 链接；手机端在 PDF 链接后显示 📖，点击用内置阅读器打开（基于 pdf.js，可选择文字）
 - AI 接口自行配置，三种方式：
@@ -129,10 +130,13 @@ deploy/deploy.sh root@<服务器IP> 8080
 | GET | `/api/health` | 状态 |
 | POST | `/api/words` | 加入生词（见下方字段）；按原形去重，追加出处 |
 | POST | `/api/words/batch` | `{items:[...]}` 批量 |
+| DELETE | `/api/words?lemma=&article_url=` | 取消生词：带 `article_url` 只删本文出处，无出处时删整条 |
+| POST | `/api/book/status` | `{words:[], phrases:[], article_url}` → 每项 `none` / `other` / `here` |
 | GET | `/api/words?q=&category=&root=&article=&sort=new\|alpha\|wrong\|freq&page=&size=` | 查询 |
 | GET / PATCH / DELETE | `/api/words/:id` | 详情（含全部出处与文章）/ 修改 / 删除 |
 | POST | `/api/words/:id/enrich` | AI 重新分析词根、词形、时态 |
 | POST / GET / DELETE | `/api/phrases`, `/api/phrases/:id` | 好词好句 |
+| DELETE | `/api/phrases?text=&article_url=` | 取消好词好句（同上规则） |
 | GET | `/api/categories`, `/api/roots`, `/api/articles` | 类别统计、词根、文章 |
 | PATCH | `/api/articles/:id` | `{category}` 手动改类别 |
 | GET | `/api/dict/:word` | 离线词典 |

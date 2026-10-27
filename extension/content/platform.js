@@ -15,6 +15,8 @@
     async setData(k, v) { await api.storage.local.set({ [k]: v }); },
     request(opts) { return api.runtime.sendMessage({ type: 'fetch', ...opts }); },
     lookup(word) { return api.runtime.sendMessage({ type: 'lookup', word }); },
+    // right-click menu titles follow the selection's 生词/好句 state, like a bookmark star
+    menuState(st) { api.runtime.sendMessage({ type: 'menu-state', ...st }).catch(() => {}); },
   };
   ERA.P = P;
 

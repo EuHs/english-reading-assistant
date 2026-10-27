@@ -12,6 +12,11 @@ ERA.UI_CSS = `
   box-shadow:0 6px 24px rgba(0,0,0,.18);z-index:3;white-space:nowrap;max-width:calc(100vw - 16px);overflow-x:auto}
 .tb button{all:unset;cursor:pointer;padding:5px 8px;border-radius:7px;font-size:13px;color:var(--fg);display:flex;align-items:center;gap:3px}
 .tb button:hover{background:var(--soft)}
+.tb button.st-here[data-a=vocab]{background:#e11d48;color:#fff}
+.tb button.st-here[data-a=phrase]{background:#7c3aed;color:#fff}
+.tb button.st-other[data-a=vocab]{box-shadow:inset 0 0 0 1.5px #e11d48;color:#e11d48}
+.tb button.st-other[data-a=phrase]{box-shadow:inset 0 0 0 1.5px #7c3aed;color:#7c3aed}
+.btn.unv{background:#e11d48}.btn.unp{background:#7c3aed}
 .tb .sep{width:1px;background:var(--line);margin:3px 2px}
 .dot{width:14px;height:14px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.15)}
 .card{position:absolute;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
@@ -134,8 +139,8 @@ ERA.UI = {
       <button data-a="ul" title="下划线"><u>U</u></button>
       <button data-a="note" title="批注">✎</button>
       <span class="sep"></span>
-      ${single ? '<button data-a="vocab" title="加入生词本">＋生词</button>' : ''}
-      <button data-a="phrase" title="加入好词好句">★好句</button>
+      ${single ? '<button data-a="vocab" title="加入生词本">☆生词</button>' : ''}
+      <button data-a="phrase" title="加入好词好句">☆好句</button>
       <button data-a="grammar" title="语法分析">语法</button>
     </div>`);
     tb.addEventListener('mousedown', (e) => e.preventDefault());
@@ -146,7 +151,20 @@ ERA.UI = {
     });
     const rect = this.anchorRect();
     this.place(tb, rect, 6);
+    ERA.Actions.refreshState(tb);
     return tb;
+  },
+
+  /** Bookmark-style button: none → ☆ add · other → ☆+ (saved from another article, adds this one) · here → ★ (click cancels). */
+  setButtonState(btn, kind, state) {
+    if (!btn) return;
+    const name = kind === 'vocab' ? '生词' : '好句';
+    const book = kind === 'vocab' ? '生词本' : '好词好句';
+    btn.classList.remove('st-none', 'st-other', 'st-here');
+    btn.classList.add('st-' + state);
+    btn.dataset.state = state;
+    btn.textContent = state === 'here' ? '★' + name : state === 'other' ? '☆' + name + '+' : '☆' + name;
+    btn.title = state === 'here' ? `已在${book}（本文）· 点击取消` : state === 'other' ? `${book}已收录（来自其他文章）· 点击加入本处` : `加入${book}`;
   },
 
   makeDraggable(card) {

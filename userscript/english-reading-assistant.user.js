@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.0.0
+// @version      1.1.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -33,7 +33,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.0.0';
+ERA.VERSION = '1.1.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -642,6 +642,7 @@ ERA.Annot = {
       if (s > 0) node = node.splitText(s);
       const span = document.createElement('span');
       span.className = `era-mark era-${ann.type}`;
+      if (ann.type === 'vocab' || ann.type === 'phrase') span.title = ann.type === 'vocab' ? '生词本 · 点击查看或取消' : '好词好句 · 点击查看或取消';
       span.dataset.eraId = ann.id;
       span.style.setProperty('--era-c', ERA.HIGHLIGHT_COLORS[ann.color] || ann.color || '#fde047');
       if (ann.note) span.title = ann.note;
@@ -650,6 +651,7 @@ ERA.Annot = {
     }
     const marks = document.querySelectorAll(`.era-mark[data-era-id="${ann.id}"]`);
     if (ann.note && marks.length) marks[marks.length - 1].classList.add('era-has-note');
+    if (marks.length) marks[marks.length - 1].classList.add('era-last');
   },
 
   unwrap(id) {
@@ -661,11 +663,12 @@ ERA.Annot = {
     });
   },
 
-  async add(range, type, color, note) {
+  /** type: highlight | underline | note | vocab | phrase. extra.ref links vocab/phrase marks to the book entry. */
+  async add(range, type, color, note, extra) {
     ERA.injectMarkStyle();
     const a = this.anchor(range);
     if (!a || !a.text.trim()) throw new Error('无法定位所选文本');
-    const ann = { id: ERA.uid(), type, color: color || 'yellow', note: note || '', created: new Date().toISOString(), ...a };
+    const ann = { id: ERA.uid(), type, color: color || 'yellow', note: note || '', created: new Date().toISOString(), ...a, ...(extra || {}) };
     const { root } = this.rootFor(range.startContainer);
     const loc = this.locate(root, ann);
     if (loc) this.wrap(loc.nodes, loc.start, loc.end, ann);
@@ -692,6 +695,15 @@ ERA.Annot = {
     await this.save((await this.list()).filter((x) => x.id !== id));
   },
 
+  /** Remove the vocab/phrase marks that belong to one book entry on this page. */
+  async removeByRef(type, ref) {
+    const list = await this.list();
+    const gone = list.filter((x) => x.type === type && x.ref === ref);
+    gone.forEach((x) => this.unwrap(x.id));
+    if (gone.length) await this.save(list.filter((x) => !gone.includes(x)));
+    return gone.length;
+  },
+
   /** Re-apply stored annotations. page=0 for HTML pages; a PDF page number for its text layer. */
   async restore(root, page) {
     ERA.injectMarkStyle();
@@ -716,6 +728,14 @@ ERA.injectMarkStyle = function () {
   .era-note{background:color-mix(in srgb,var(--era-c) 35%,transparent)!important;border-bottom:2px dashed var(--era-c)}
   .era-has-note::after{content:"✎";font-size:10px;vertical-align:super;color:#d97706;opacity:1}
   .textLayer .era-has-note::after{color:#d97706}
+  .era-vocab{text-decoration:underline wavy #e11d48 1.5px!important;text-underline-offset:4px;background:rgba(225,29,72,.07)!important}
+  .era-phrase{text-decoration:underline double #7c3aed!important;text-underline-offset:4px;background:rgba(124,58,237,.07)!important}
+  .era-vocab.era-last::after{content:"生";font:bold 9px/1 sans-serif;color:#fff;background:#e11d48;border-radius:3px;padding:1px 2px;margin-left:1px;vertical-align:super}
+  .era-phrase.era-last::after{content:"★";font-size:10px;color:#7c3aed;vertical-align:super;margin-left:1px}
+  .textLayer .era-vocab{text-decoration:none!important;border-bottom:2px dotted #e11d48;background:rgba(225,29,72,.18)!important}
+  .textLayer .era-phrase{text-decoration:none!important;border-bottom:3px double #7c3aed;background:rgba(124,58,237,.16)!important}
+  .textLayer .era-last::after{color:#7c3aed}
+  .textLayer .era-vocab.era-last::after{color:#fff}
   .era-flash{animation:era-flash 1.2s ease 2}
   @keyframes era-flash{50%{outline:3px solid #f59e0b}}`;
   (document.head || document.documentElement).appendChild(st);
@@ -759,13 +779,68 @@ ERA.Store = {
     return this.enqueue('phrase', payload);
   },
 
-  async removeWord(id) { await ERA.P.setData('vocab', (await this.words()).filter((x) => x.id !== id)); },
-  async removePhrase(id) { await ERA.P.setData('phrases', (await this.phrases()).filter((x) => x.id !== id)); },
+  /** Delete a whole entry from the book (book panel / options page); also deleted on the server. */
+  async removeWord(id) {
+    const list = await this.words();
+    const e = list.find((x) => x.id === id);
+    await ERA.P.setData('vocab', list.filter((x) => x.id !== id));
+    if (e) return this.enqueue('unword', { lemma: e.lemma });
+  },
+  async removePhrase(id) {
+    const list = await this.phrases();
+    const e = list.find((x) => x.id === id);
+    await ERA.P.setData('phrases', list.filter((x) => x.id !== id));
+    if (e) return this.enqueue('unphrase', { text: e.text });
+  },
+
+  normPhrase: (t) => String(t || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[\s"'“”‘’.,;:!?]+$/g, '').replace(/^[\s"'“”‘’]+/, ''),
+
+  /** Bookmark-style state on the current article: 'none' | 'other' (saved from another article) | 'here'. */
+  async wordState(lemma, url) {
+    lemma = String(lemma || '').toLowerCase();
+    if (ERA.P.remoteBook) {
+      const r = await ERA.serverCall('POST', '/api/book/status', { words: [lemma], article_url: url });
+      return r.words[lemma].state;
+    }
+    const e = (await this.words()).find((x) => x.lemma === lemma);
+    if (!e) return 'none';
+    return (e.occurrences || []).some((o) => o.article && o.article.url === url) ? 'here' : 'other';
+  },
+  async phraseState(text, url) {
+    if (ERA.P.remoteBook) {
+      const r = await ERA.serverCall('POST', '/api/book/status', { phrases: [text], article_url: url });
+      return r.phrases[text].state;
+    }
+    const n = this.normPhrase(text);
+    const hits = (await this.phrases()).filter((x) => this.normPhrase(x.text) === n);
+    if (!hits.length) return 'none';
+    return hits.some((x) => x.article && x.article.url === url) ? 'here' : 'other';
+  },
+
+  /** Cancel (like un-starring): drops this article's occurrence; the word disappears when none are left. */
+  async cancelWord(lemma, url) {
+    lemma = String(lemma || '').toLowerCase();
+    const list = await this.words();
+    const e = list.find((x) => x.lemma === lemma);
+    if (e) {
+      e.occurrences = (e.occurrences || []).filter((o) => !(o.article && o.article.url === url));
+      await ERA.P.setData('vocab', e.occurrences.length ? list : list.filter((x) => x !== e));
+    }
+    return this.enqueue('unword', { lemma, article_url: url });
+  },
+  async cancelPhrase(text, url) {
+    const n = this.normPhrase(text);
+    await ERA.P.setData('phrases', (await this.phrases()).filter((x) => !(this.normPhrase(x.text) === n && x.article && x.article.url === url)));
+    return this.enqueue('unphrase', { text, article_url: url });
+  },
 
   async enqueue(kind, payload) {
     const cfg = await ERA.P.getConfig();
     if (!cfg.server.enabled || !cfg.server.autoSync) return { synced: false, reason: 'server-disabled' };
-    const q = (await ERA.P.getData('syncQueue', [])) || [];
+    let q = (await ERA.P.getData('syncQueue', [])) || [];
+    // a cancel makes a still-pending add for the same item pointless
+    if (kind === 'unword') q = q.filter((i) => !(i.kind === 'word' && (i.payload.lemma || i.payload.word || '').toLowerCase() === payload.lemma && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
+    if (kind === 'unphrase') q = q.filter((i) => !(i.kind === 'phrase' && this.normPhrase(i.payload.text) === this.normPhrase(payload.text) && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     q.push({ id: ERA.uid(), kind, payload });
     await ERA.P.setData('syncQueue', q);
     return this.flush(cfg);
@@ -780,7 +855,12 @@ ERA.Store = {
     let ok = 0, lastErr = '';
     for (const item of q) {
       try {
-        await ERA.serverCall('POST', item.kind === 'word' ? cfg.server.endpoints.words : cfg.server.endpoints.phrases, item.payload, cfg);
+        const ep = item.kind === 'word' || item.kind === 'unword' ? cfg.server.endpoints.words : cfg.server.endpoints.phrases;
+        if (item.kind === 'word' || item.kind === 'phrase') await ERA.serverCall('POST', ep, item.payload, cfg);
+        else {
+          const qs = Object.entries(item.payload).filter(([, v]) => v).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&');
+          await ERA.serverCall('DELETE', ep + '?' + qs, null, cfg);
+        }
         ok++;
       } catch (e) { lastErr = e.message; left.push(item); }
     }
@@ -837,6 +917,11 @@ ERA.UI_CSS = `
   box-shadow:0 6px 24px rgba(0,0,0,.18);z-index:3;white-space:nowrap;max-width:calc(100vw - 16px);overflow-x:auto}
 .tb button{all:unset;cursor:pointer;padding:5px 8px;border-radius:7px;font-size:13px;color:var(--fg);display:flex;align-items:center;gap:3px}
 .tb button:hover{background:var(--soft)}
+.tb button.st-here[data-a=vocab]{background:#e11d48;color:#fff}
+.tb button.st-here[data-a=phrase]{background:#7c3aed;color:#fff}
+.tb button.st-other[data-a=vocab]{box-shadow:inset 0 0 0 1.5px #e11d48;color:#e11d48}
+.tb button.st-other[data-a=phrase]{box-shadow:inset 0 0 0 1.5px #7c3aed;color:#7c3aed}
+.btn.unv{background:#e11d48}.btn.unp{background:#7c3aed}
 .tb .sep{width:1px;background:var(--line);margin:3px 2px}
 .dot{width:14px;height:14px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.15)}
 .card{position:absolute;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
@@ -959,8 +1044,8 @@ ERA.UI = {
       <button data-a="ul" title="下划线"><u>U</u></button>
       <button data-a="note" title="批注">✎</button>
       <span class="sep"></span>
-      ${single ? '<button data-a="vocab" title="加入生词本">＋生词</button>' : ''}
-      <button data-a="phrase" title="加入好词好句">★好句</button>
+      ${single ? '<button data-a="vocab" title="加入生词本">☆生词</button>' : ''}
+      <button data-a="phrase" title="加入好词好句">☆好句</button>
       <button data-a="grammar" title="语法分析">语法</button>
     </div>`);
     tb.addEventListener('mousedown', (e) => e.preventDefault());
@@ -971,7 +1056,20 @@ ERA.UI = {
     });
     const rect = this.anchorRect();
     this.place(tb, rect, 6);
+    ERA.Actions.refreshState(tb);
     return tb;
+  },
+
+  /** Bookmark-style button: none → ☆ add · other → ☆+ (saved from another article, adds this one) · here → ★ (click cancels). */
+  setButtonState(btn, kind, state) {
+    if (!btn) return;
+    const name = kind === 'vocab' ? '生词' : '好句';
+    const book = kind === 'vocab' ? '生词本' : '好词好句';
+    btn.classList.remove('st-none', 'st-other', 'st-here');
+    btn.classList.add('st-' + state);
+    btn.dataset.state = state;
+    btn.textContent = state === 'here' ? '★' + name : state === 'other' ? '☆' + name + '+' : '☆' + name;
+    btn.title = state === 'here' ? `已在${book}（本文）· 点击取消` : state === 'other' ? `${book}已收录（来自其他文章）· 点击加入本处` : `加入${book}`;
   },
 
   makeDraggable(card) {
@@ -1310,8 +1408,10 @@ ERA.Actions = {
         case 'hl': return await this.annotate('highlight', opt.color || 'yellow');
         case 'ul': return await this.annotate('underline', opt.color || 'blue');
         case 'note': return this.noteEditor();
-        case 'vocab': return await this.addVocab();
-        case 'phrase': return await this.addPhrase();
+        case 'vocab': return await this.toggleVocab();
+        case 'phrase': return await this.togglePhrase();
+        case 'unvocab': return await this.cancelVocab();
+        case 'unphrase': return await this.cancelPhrase();
         case 'grammar': return await this.grammar();
       }
     } catch (e) {
@@ -1329,7 +1429,7 @@ ERA.Actions = {
       const card = UI.card('词典', `${UI.dictHtml(d || { word: text })}
         <div class="ai-ctx">${hasAI ? UI.loading('AI 结合语境翻译…') : '<div class="muted">配置 AI 后可获得语境释义、词根与时态分析</div>'}</div>
         <div class="btns"><button class="btn" data-x="analyze" ${hasAI ? '' : 'disabled'}>AI 词根/时态分析</button><button class="btn gh" data-x="vocab">＋生词本</button></div>`);
-      card.querySelector('[data-x=vocab]').onclick = () => this.addVocab();
+      this.bindBookButton(card.querySelector('[data-x=vocab]'), 'vocab');
       card.querySelector('[data-x=analyze]').onclick = (e) => this.analyzeInto(card, e.target);
       if (hasAI) {
         ERA.aiTranslate(text, sentence).then((r) => {
@@ -1344,7 +1444,7 @@ ERA.Actions = {
       const r = await ERA.aiTranslate(text, sentence !== text ? sentence : '');
       card.querySelector('.res').innerHTML = `<div class="sec"><h4>译文</h4><div class="tr">${UI.esc(r.translation)}</div>${r.notes ? `<div class="muted">${UI.esc(r.notes)}</div>` : ''}</div>
         <div class="btns"><button class="btn gh" data-x="phrase">★加入好词好句</button><button class="btn gh" data-x="grammar">语法分析</button></div>`;
-      card.querySelector('[data-x=phrase]').onclick = () => this.addPhrase(r);
+      this.bindBookButton(card.querySelector('[data-x=phrase]'), 'phrase', () => this.addPhrase(r));
       card.querySelector('[data-x=grammar]').onclick = () => this.grammar();
     } catch (e) { card.querySelector('.res').innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; }
   },
@@ -1394,6 +1494,7 @@ ERA.Actions = {
     const el = document.querySelector(`.era-mark[data-era-id="${id}"]`);
     UI.state = { range: null, text: ann.text, sentence: ann.text };
     if (el) { const r = document.createRange(); r.selectNodeContents(el); UI.state.range = r; }
+    if (ann.type === 'vocab' || ann.type === 'phrase') return this.bookMarkMenu(ann);
     const colors = Object.entries(ERA.HIGHLIGHT_COLORS).map(([k, c]) => `<button class="btn gh" data-c="${k}"><span class="dot" style="background:${c}"></span></button>`).join('');
     const card = UI.card({ highlight: '高亮', underline: '下划线', note: '批注' }[ann.type] || '标注', `
       <div class="sentence">${UI.esc(ann.text)} ${UI.spk(ann.text)}</div>
@@ -1404,6 +1505,98 @@ ERA.Actions = {
     card.querySelector('[data-x=note]').onclick = () => this.noteEditor(ann);
     card.querySelector('[data-x=tr]').onclick = () => this.translate();
     card.querySelector('[data-x=del]').onclick = async () => { await ERA.Annot.remove(id); card.remove(); UI.toast('已删除'); };
+  },
+
+  /** Card for a 生词 / 好词好句 mark: look it up again or cancel it. */
+  async bookMarkMenu(ann) {
+    const UI = ERA.UI;
+    const isVocab = ann.type === 'vocab';
+    const d = isVocab ? await ERA.P.lookup(ann.ref || ann.text) : null;
+    const card = UI.card(isVocab ? '生词本 · 已收藏' : '好词好句 · 已收藏', `
+      ${isVocab ? UI.dictHtml(d && d.found ? d : { found: false }) : `<div class="tr"><b>${UI.esc(ann.text)}</b> ${UI.spk(ann.text)}</div>`}
+      <div class="btns"><button class="btn ${isVocab ? 'unv' : 'unp'}" data-x="cancel">${isVocab ? '★ 取消生词' : '★ 取消好词好句'}</button>
+        <button class="btn gh" data-x="tr">${isVocab ? 'AI 分析' : '翻译'}</button></div>`);
+    card.querySelector('[data-x=cancel]').onclick = async () => { card.remove(); await (isVocab ? this.cancelVocab(ann.ref) : this.cancelPhrase(ann.text)); };
+    card.querySelector('[data-x=tr]').onclick = () => this.translate();
+  },
+
+  /** A card button that behaves like a bookmark star for the current selection. */
+  bindBookButton(btn, kind, add) {
+    const st = ERA.UI.state;
+    const key = kind === 'vocab' ? 'vocabState' : 'phraseState';
+    const paint = () => {
+      const here = st[key] === 'here';
+      btn.textContent = here ? (kind === 'vocab' ? '★ 已在生词本 · 取消' : '★ 已在好词好句 · 取消') : kind === 'vocab' ? '☆ 加入生词本' : '☆ 加入好词好句';
+      btn.className = 'btn ' + (here ? (kind === 'vocab' ? 'unv' : 'unp') : 'gh');
+    };
+    paint();
+    if (!st[key]) this.refreshState(null).then(paint);
+    btn.onclick = () => (st[key] === 'here' ? (kind === 'vocab' ? this.cancelVocab() : this.cancelPhrase()) : add ? add() : kind === 'vocab' ? this.addVocab() : this.addPhrase());
+  },
+
+  articleUrl() {
+    return (ERA.pageMetaOverride && ERA.pageMetaOverride.url) || ERA.cleanUrl(location.href);
+  },
+
+  /** Resolve the bookmark state of the current selection and paint toolbar buttons / context menu titles. */
+  async refreshState(tb) {
+    const UI = ERA.UI, st = UI.state, url = this.articleUrl();
+    const single = ERA.isSingleWord(st.text);
+    try {
+      let vocab = 'none';
+      if (single) {
+        const d = await ERA.P.lookup(st.text);
+        st.lemma = ((d && d.lemma) || st.text).toLowerCase();
+        vocab = await ERA.Store.wordState(st.lemma, url);
+      }
+      const phrase = await ERA.Store.phraseState(st.text, url);
+      st.vocabState = vocab; st.phraseState = phrase;
+      if (tb) { UI.setButtonState(tb.querySelector('[data-a=vocab]'), 'vocab', vocab); UI.setButtonState(tb.querySelector('[data-a=phrase]'), 'phrase', phrase); }
+      if (ERA.P.menuState) ERA.P.menuState({ single, vocab, phrase });
+    } catch (e) { /* state is cosmetic; adding still works */ }
+  },
+
+  repaint() {
+    const tb = ERA.UI.wrap && ERA.UI.wrap.querySelector('.tb');
+    return this.refreshState(tb);
+  },
+
+  async toggleVocab() {
+    const st = ERA.UI.state;
+    if (!st.vocabState) await this.refreshState(null);
+    return st.vocabState === 'here' ? this.cancelVocab() : this.addVocab();
+  },
+  async togglePhrase() {
+    const st = ERA.UI.state;
+    if (!st.phraseState) await this.refreshState(null);
+    return st.phraseState === 'here' ? this.cancelPhrase() : this.addPhrase();
+  },
+
+  async cancelVocab(lemma) {
+    const UI = ERA.UI;
+    lemma = (lemma || UI.state.lemma || UI.state.text || '').toLowerCase();
+    const res = await ERA.Store.cancelWord(lemma, this.articleUrl());
+    await ERA.Annot.removeByRef('vocab', lemma);
+    UI.toast(`已从生词本取消「${lemma}」` + (res.reason === 'server-disabled' ? '' : res.synced ? ' · 已同步服务器' : ' · 服务器稍后同步'));
+    return this.repaint();
+  },
+  async cancelPhrase(text) {
+    const UI = ERA.UI;
+    text = text || UI.state.text;
+    const res = await ERA.Store.cancelPhrase(text, this.articleUrl());
+    await ERA.Annot.removeByRef('phrase', ERA.Store.normPhrase(text));
+    UI.toast('已从好词好句取消' + (res.reason === 'server-disabled' ? '' : res.synced ? ' · 已同步服务器' : ' · 服务器稍后同步'));
+    return this.repaint();
+  },
+
+  /** Mark the saved text on the page (only when the live selection is exactly that text). */
+  async markSaved(type, text, ref) {
+    const r = ERA.UI.state.range;
+    if (!r || r.toString().replace(/\s+/g, ' ').trim() !== text) return;
+    try {
+      await ERA.Annot.removeByRef(type, ref);
+      await ERA.Annot.add(r, type, type === 'vocab' ? '#e11d48' : '#7c3aed', '', { ref });
+    } catch (e) { /* page text not anchorable */ }
   },
 
   /** Right-click "加入生词本": word + translation + sentence + sentence translation + article info. */
@@ -1432,13 +1625,18 @@ ERA.Actions = {
       article: { ...meta, category: cat || undefined }, source: ERA.P.name || 'extension',
     };
     const res = await ERA.Store.addWord(payload);
+    UI.state.lemma = payload.lemma;
+    await this.markSaved('vocab', text, payload.lemma);
     card.querySelector('.bd').innerHTML = `
       ${UI.dictHtml(d.found ? d : { found: false })}
       ${a.lemma ? UI.aiWordHtml(a) : ai && ai.error ? `<div class="err">AI：${UI.esc(ai.error)}</div>` : ''}
       <div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, word)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>
       ${this.metaHtml(payload.article)}
-      <div class="sec muted">✅ 已保存到本地生词本 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '服务器同步失败，稍后重试：' + UI.esc(res.error || '')}</div>`;
+      <div class="sec muted">✅ 已保存到${ERA.P.remoteBook ? '' : '本地'}生词本 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '服务器同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
+      <div class="btns"><button class="btn unv" data-x="undo">★ 取消加入</button></div>`;
+    card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelVocab(payload.lemma); };
     window.getSelection().removeAllRanges();
+    this.repaint();
   },
 
   async addPhrase(pre) {
@@ -1460,12 +1658,16 @@ ERA.Actions = {
       article: { ...meta, category: cat || undefined }, source: ERA.P.name || 'extension',
     };
     const res = await ERA.Store.addPhrase(payload);
+    await this.markSaved('phrase', text, ERA.Store.normPhrase(text));
     card.querySelector('.bd').innerHTML = `
       <div class="tr"><b>${UI.esc(text)}</b> ${UI.spk(text)}</div>
       <div class="tr">${UI.esc(payload.translation)}${tr && tr.error ? `<span class="err">AI：${UI.esc(tr.error)}</span>` : ''}</div>
       ${!isSentence ? `<div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, text)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>` : ''}
       ${this.metaHtml(payload.article)}
-      <div class="sec muted">✅ 已保存到好词好句 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '同步失败，稍后重试：' + UI.esc(res.error || '')}</div>`;
+      <div class="sec muted">✅ 已保存到好词好句 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
+      <div class="btns"><button class="btn unp" data-x="undo">★ 取消加入</button></div>`;
+    card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelPhrase(text); };
+    this.repaint();
   },
 
   metaHtml(a) {
@@ -1544,6 +1746,7 @@ ERA.init = async function (platform, { restore = true } = {}) {
     const c = await platform.getConfig();
     if (!UI.captureSelection()) return;
     if (c.ui.showToolbar) UI.showToolbar();
+    else ERA.Actions.refreshState(null); // keeps context-menu titles in sync
     if (c.ui.autoLookupWord && ERA.isSingleWord(UI.state.text) && !matchMedia('(max-width:640px)').matches) ERA.Actions.translate();
   };
   document.addEventListener('mouseup', (e) => {

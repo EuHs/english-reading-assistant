@@ -85,6 +85,7 @@ api.post('/words/batch', wrap((req) => (req.body.items || []).map((p) => { try {
 api.get('/words', wrap((req) => svc.listWords(req.query)));
 api.get('/words/:id', wrap((req, res) => svc.getWord(req.params.id) || res.status(404).json({ error: '不存在' })));
 api.patch('/words/:id', wrap((req) => svc.updateWord(req.params.id, req.body)));
+api.delete('/words', wrap((req) => svc.removeWordBy(req.query)));
 api.delete('/words/:id', wrap((req) => ({ deleted: svc.deleteWord(req.params.id) })));
 api.post('/words/:id/enrich', wrap(async (req) => {
   const w = svc.getWord(req.params.id);
@@ -96,7 +97,11 @@ api.post('/words/:id/enrich', wrap(async (req) => {
 /* phrases */
 api.post('/phrases', wrap((req) => svc.addPhrase(req.body)));
 api.get('/phrases', wrap((req) => svc.listPhrases(req.query)));
+api.delete('/phrases', wrap((req) => svc.removePhraseBy(req.query)));
 api.delete('/phrases/:id', wrap((req) => ({ deleted: svc.deletePhrase(req.params.id) })));
+
+/* bookmark-style state of words / phrases on a page */
+api.post('/book/status', wrap((req) => svc.bookStatus(req.body || {})));
 
 /* taxonomy */
 api.get('/categories', wrap(() => svc.categories()));

@@ -74,6 +74,7 @@ ERA.Annot = {
       if (s > 0) node = node.splitText(s);
       const span = document.createElement('span');
       span.className = `era-mark era-${ann.type}`;
+      if (ann.type === 'vocab' || ann.type === 'phrase') span.title = ann.type === 'vocab' ? '生词本 · 点击查看或取消' : '好词好句 · 点击查看或取消';
       span.dataset.eraId = ann.id;
       span.style.setProperty('--era-c', ERA.HIGHLIGHT_COLORS[ann.color] || ann.color || '#fde047');
       if (ann.note) span.title = ann.note;
@@ -82,6 +83,7 @@ ERA.Annot = {
     }
     const marks = document.querySelectorAll(`.era-mark[data-era-id="${ann.id}"]`);
     if (ann.note && marks.length) marks[marks.length - 1].classList.add('era-has-note');
+    if (marks.length) marks[marks.length - 1].classList.add('era-last');
   },
 
   unwrap(id) {
@@ -93,11 +95,12 @@ ERA.Annot = {
     });
   },
 
-  async add(range, type, color, note) {
+  /** type: highlight | underline | note | vocab | phrase. extra.ref links vocab/phrase marks to the book entry. */
+  async add(range, type, color, note, extra) {
     ERA.injectMarkStyle();
     const a = this.anchor(range);
     if (!a || !a.text.trim()) throw new Error('无法定位所选文本');
-    const ann = { id: ERA.uid(), type, color: color || 'yellow', note: note || '', created: new Date().toISOString(), ...a };
+    const ann = { id: ERA.uid(), type, color: color || 'yellow', note: note || '', created: new Date().toISOString(), ...a, ...(extra || {}) };
     const { root } = this.rootFor(range.startContainer);
     const loc = this.locate(root, ann);
     if (loc) this.wrap(loc.nodes, loc.start, loc.end, ann);
@@ -124,6 +127,15 @@ ERA.Annot = {
     await this.save((await this.list()).filter((x) => x.id !== id));
   },
 
+  /** Remove the vocab/phrase marks that belong to one book entry on this page. */
+  async removeByRef(type, ref) {
+    const list = await this.list();
+    const gone = list.filter((x) => x.type === type && x.ref === ref);
+    gone.forEach((x) => this.unwrap(x.id));
+    if (gone.length) await this.save(list.filter((x) => !gone.includes(x)));
+    return gone.length;
+  },
+
   /** Re-apply stored annotations. page=0 for HTML pages; a PDF page number for its text layer. */
   async restore(root, page) {
     ERA.injectMarkStyle();
@@ -148,6 +160,14 @@ ERA.injectMarkStyle = function () {
   .era-note{background:color-mix(in srgb,var(--era-c) 35%,transparent)!important;border-bottom:2px dashed var(--era-c)}
   .era-has-note::after{content:"✎";font-size:10px;vertical-align:super;color:#d97706;opacity:1}
   .textLayer .era-has-note::after{color:#d97706}
+  .era-vocab{text-decoration:underline wavy #e11d48 1.5px!important;text-underline-offset:4px;background:rgba(225,29,72,.07)!important}
+  .era-phrase{text-decoration:underline double #7c3aed!important;text-underline-offset:4px;background:rgba(124,58,237,.07)!important}
+  .era-vocab.era-last::after{content:"生";font:bold 9px/1 sans-serif;color:#fff;background:#e11d48;border-radius:3px;padding:1px 2px;margin-left:1px;vertical-align:super}
+  .era-phrase.era-last::after{content:"★";font-size:10px;color:#7c3aed;vertical-align:super;margin-left:1px}
+  .textLayer .era-vocab{text-decoration:none!important;border-bottom:2px dotted #e11d48;background:rgba(225,29,72,.18)!important}
+  .textLayer .era-phrase{text-decoration:none!important;border-bottom:3px double #7c3aed;background:rgba(124,58,237,.16)!important}
+  .textLayer .era-last::after{color:#7c3aed}
+  .textLayer .era-vocab.era-last::after{color:#fff}
   .era-flash{animation:era-flash 1.2s ease 2}
   @keyframes era-flash{50%{outline:3px solid #f59e0b}}`;
   (document.head || document.documentElement).appendChild(st);
