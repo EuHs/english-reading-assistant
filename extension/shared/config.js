@@ -2,7 +2,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.2.0';
+ERA.VERSION = '1.3.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -31,6 +31,7 @@ ERA.defaultConfig = function () {
       translateSentenceOnAdd: true,
       pdfIntercept: true, // extension: open .pdf links in the study reader
       showBookMarks: true, // wavy / double underline under saved 生词 and 好词好句
+      fab: 'auto', // userscript floating menu button: auto (no script menu or touch screen) | on | off
     },
     tts: { lang: 'en-US', voice: '', rate: 0.95 },
     ai: {

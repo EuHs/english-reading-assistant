@@ -34,6 +34,7 @@ function gmRequest(o, responseType) {
 }
 
 let dictData = null, rootsData = null, dictLoading = null;
+/** Bundled @resource (Tampermonkey) or one download from the CDN; the page fetch lets Safari's HTTP cache keep it. */
 async function loadDict() {
   if (dictData) return true;
   if (dictLoading) return dictLoading;
@@ -42,15 +43,21 @@ async function loadDict() {
     dictData = parse(GMX.resource('dict'));
     rootsData = parse(GMX.resource('roots'));
     if (!dictData) {
-      const r = await gmRequest({ url: DICT_CDN + 'dict.json', timeout: 60000 });
-      dictData = r.ok ? parse(r.text) : null;
-      const rr = await gmRequest({ url: DICT_CDN + 'roots.json', timeout: 30000 });
-      rootsData = rr.ok ? parse(rr.text) : null;
+      const get = async (f, timeout) => {
+        try { const r = await fetch(DICT_CDN + f); if (r.ok) return await r.json(); } catch (e) { /* CSP or offline: try the manager */ }
+        const r = await gmRequest({ url: DICT_CDN + f, timeout });
+        return r.ok ? parse(r.text) : null;
+      };
+      const slow = setTimeout(() => ERA.UI.toast('首次查词：正在下载离线词典（约 7 MB）…', 4000), 800);
+      [dictData, rootsData] = await Promise.all([get('dict.json', 90000), get('roots.json', 30000)]);
+      clearTimeout(slow);
     }
+    if (!dictData) dictLoading = null; // allow a retry later
     return !!dictData;
   })();
   return dictLoading;
 }
+const hasBundledDict = () => !!GMX.resource('dict');
 
 const P = {
   name: 'userscript',
@@ -60,13 +67,15 @@ const P = {
   setData: (k, v) => GMX.set(k, v),
   request: (o) => gmRequest(o),
   async lookup(word) {
-    if (await loadDict()) return ERA.dictLookup(dictData, rootsData, word);
-    // last resort: the configured server's dictionary
+    // without a bundled dictionary, ask the configured server first instead of downloading 7 MB on a phone
     const cfg = await P.getConfig();
-    if (cfg.server.enabled) {
-      try { return await ERA.serverCall('GET', (cfg.server.endpoints.dict || '/api/dict') + '/' + encodeURIComponent(word), null, cfg); } catch (e) { /* offline */ }
-    }
-    return null;
+    const viaServer = async () => {
+      if (!cfg.server.enabled || !cfg.server.baseUrl) return null;
+      try { return await ERA.serverCall('GET', (cfg.server.endpoints.dict || '/api/dict') + '/' + encodeURIComponent(word), null, cfg); } catch (e) { return null; }
+    };
+    if (!hasBundledDict() && !dictData) { const r = await viaServer(); if (r) return r; }
+    if (await loadDict()) return ERA.dictLookup(dictData, rootsData, word);
+    return viaServer();
   },
 };
 
@@ -132,16 +141,89 @@ function decoratePdfLinks(root) {
   });
 }
 
+/* ---------- menu: script-manager menu and/or a floating button ---------- */
+const MENU = [
+  ['⚙️ 设置（AI / 服务器 / 导入导出）', () => ERA.Settings.openPanel()],
+  ['📒 生词本 / 好词好句', () => ERA.UI.showBook()],
+  ['📂 打开本地 PDF', pickLocalPdf],
+  ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
+  ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
+  ['🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); }],
+];
+const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');
+
+const FAB_CSS = `:host{all:initial}
+.fab{position:fixed;right:6px;width:38px;height:38px;border-radius:50%;background:rgba(17,24,39,.55);color:#fff;font:600 15px/38px -apple-system,system-ui,sans-serif;text-align:center;
+  box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer;user-select:none;-webkit-user-select:none;touch-action:none;-webkit-tap-highlight-color:transparent}
+.fab.open{background:#111827}
+.menu{position:fixed;right:50px;min-width:210px;background:#fff;color:#111827;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.25);padding:6px;font:14px/1.4 -apple-system,system-ui,sans-serif}
+.menu button{all:unset;display:block;box-sizing:border-box;width:100%;padding:10px 12px;border-radius:8px;cursor:pointer}
+.menu button:active,.menu button:hover{background:#f3f4f6}
+.menu .muted{color:#6b7280;font-size:12px}
+@media (prefers-color-scheme:dark){.menu{background:#1f2937;color:#f9fafb}.menu button:active,.menu button:hover{background:#374151}.menu .muted{color:#9ca3af}}`;
+
+let fabHost = null;
+async function updateFab(cfg) {
+  const mode = (cfg || (await P.getConfig())).ui.fab || 'auto';
+  // with no script-manager menu the button is the only way into settings, so it never goes away there
+  const show = !hasMenuApi || mode === 'on' || (mode === 'auto' && matchMedia('(pointer:coarse)').matches);
+  if (!show) { fabHost && fabHost.remove(); fabHost = null; return; }
+  if (fabHost && fabHost.isConnected) return;
+  fabHost = document.createElement('div');
+  fabHost.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;z-index:2147483646';
+  const root = fabHost.attachShadow({ mode: 'open' });
+  root.innerHTML = `<style>${FAB_CSS}</style><div class="fab" title="英语阅读助手">英</div>`;
+  document.documentElement.appendChild(fabHost);
+  const fab = root.querySelector('.fab');
+  const clampY = (y) => Math.max(8, Math.min(innerHeight - 46, y));
+  let y = clampY(+(await GMX.get('fabY', 0)) || innerHeight * 0.62);
+  fab.style.top = y + 'px';
+
+  let menu = null;
+  const close = () => { menu && menu.remove(); menu = null; fab.classList.remove('open'); };
+  const open = () => {
+    menu = document.createElement('div');
+    menu.className = 'menu';
+    menu.innerHTML = MENU.map(([l], i) => `<button data-i="${i}">${l}</button>`).join('') +
+      (hasMenuApi ? '<button data-i="hide" class="muted">隐藏此按钮（可在设置中恢复）</button>' : '<button data-i="hide" class="muted">本页暂时隐藏</button>');
+    root.appendChild(menu);
+    menu.style.top = Math.max(8, Math.min(innerHeight - menu.offsetHeight - 8, y + 19 - menu.offsetHeight / 2)) + 'px';
+    fab.classList.add('open');
+    menu.onclick = async (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      close();
+      if (b.dataset.i !== 'hide') return MENU[+b.dataset.i][1]();
+      if (hasMenuApi) { const c = await P.getConfig(); c.ui.fab = 'off'; await P.setConfig(c); } else { fabHost.remove(); fabHost = null; }
+    };
+  };
+
+  // drag vertically to move it out of the way; a short tap opens the menu
+  let start = null;
+  fab.addEventListener('pointerdown', (e) => { start = { py: e.clientY, y, moved: false }; fab.setPointerCapture(e.pointerId); e.preventDefault(); });
+  fab.addEventListener('pointermove', (e) => {
+    if (!start) return;
+    if (Math.abs(e.clientY - start.py) > 6) start.moved = true;
+    if (start.moved) { close(); y = clampY(start.y + e.clientY - start.py); fab.style.top = y + 'px'; }
+  });
+  fab.addEventListener('pointerup', () => {
+    if (!start) return;
+    if (start.moved) GMX.set('fabY', Math.round(y)); else if (menu) close(); else open();
+    start = null;
+  });
+  fab.addEventListener('pointercancel', () => { start = null; });
+  document.addEventListener('pointerdown', (e) => { if (menu && !e.composedPath().includes(fabHost)) close(); }, true);
+  addEventListener('resize', () => { y = clampY(y); fab.style.top = y + 'px'; });
+}
+
 (async function main() {
   if (window.top !== window.self) return;
   ERA.P = P;
   await ERA.init(P);
-  GMX.menu('⚙️ 设置（AI / 服务器 / 导入导出）', () => ERA.Settings.openPanel());
-  GMX.menu('📒 生词本 / 好词好句', () => ERA.UI.showBook());
-  GMX.menu('📂 打开本地 PDF', pickLocalPdf);
-  GMX.menu('📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); });
-  GMX.menu('👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks());
-  GMX.menu('🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); });
+  for (const [label, fn] of MENU) GMX.menu(label, fn);
+  const setConfig = P.setConfig;
+  P.setConfig = async (c) => { await setConfig(c); updateFab(c); };
+  updateFab();
   if (document.contentType === 'application/pdf') openPdfOverlay(location.href);
   decoratePdfLinks();
   new MutationObserver(() => { clearTimeout(decoratePdfLinks.t); decoratePdfLinks.t = setTimeout(decoratePdfLinks, 800); }).observe(document.body, { childList: true, subtree: true });
