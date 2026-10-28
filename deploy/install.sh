@@ -7,6 +7,7 @@ APP=/opt/era
 PORT="${PORT:-8080}"
 NODE_VER="${NODE_VER:-v22.14.0}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
+NPM_TIMEOUT="${NPM_TIMEOUT:-1200}"   # seconds; past this, install without the optional Kokoro TTS packages
 
 echo "==> 1/5 Node.js (>= 22.13 for built-in SQLite)"
 need_node=1
@@ -44,9 +45,18 @@ if [ ! -f "$APP/.env" ]; then
 fi
 sed -i "s/^PORT=.*/PORT=${PORT}/" "$APP/.env"
 
-echo "==> 3/5 npm install (registry: $NPM_REGISTRY)"
+echo "==> 3/5 npm packages (registry: $NPM_REGISTRY; about 150 MB, usually a few minutes)"
 cd "$APP"
-npm install --omit=dev --include=optional --no-audit --no-fund --registry="$NPM_REGISTRY"
+# Kokoro TTS pulls in onnxruntime-node, whose install script otherwise downloads 225 MB of CUDA (GPU) libraries
+# from GitHub on every Linux x64 server, with no timeout: from mainland China that stalls this step indefinitely.
+# The server runs Kokoro on the CPU, and the CPU libraries ship inside the npm package itself.
+export ONNXRUNTIME_NODE_INSTALL_CUDA=skip
+npm_args=(--omit=dev --no-audit --no-fund --update-notifier=false --registry="$NPM_REGISTRY")
+# npm ci starts from an empty node_modules, so files half-written by an interrupted earlier run can't linger
+if ! timeout --foreground "$NPM_TIMEOUT" npm ci "${npm_args[@]}" --include=optional; then
+  echo "    npm with the optional Kokoro TTS packages failed or ran past ${NPM_TIMEOUT}s; installing the server without them"
+  npm ci "${npm_args[@]}" --omit=optional
+fi
 if node -e "import('kokoro-js').then(()=>process.exit(0),()=>process.exit(1))"; then echo "    Kokoro TTS: ok"; else echo "    Kokoro TTS unavailable (web app falls back to browser voices)"; fi
 chown -R era:era "$APP"
 
@@ -74,15 +84,24 @@ WantedBy=multi-user.target
 UNIT
 [ -x /usr/local/bin/node ] || sed -i "s#/usr/local/bin/node#$(command -v node)#" /etc/systemd/system/era.service
 systemctl daemon-reload
-systemctl enable --now era
+systemctl enable era
+# a single (re)start: starting and then restarting right away could cut off the first Kokoro model download
 systemctl restart era
 
 echo "==> 5/5 firewall"
 if command -v firewall-cmd >/dev/null && systemctl is-active --quiet firewalld; then firewall-cmd --permanent --add-port=${PORT}/tcp && firewall-cmd --reload; fi
 if command -v ufw >/dev/null && ufw status | grep -q active; then ufw allow ${PORT}/tcp; fi
 
-sleep 2
-curl -fsS "http://127.0.0.1:${PORT}/api/health" && echo
+# the service takes a moment to load the dictionary; give it up to 30 s to answer
+for i in $(seq 30); do
+  curl -fsS "http://127.0.0.1:${PORT}/api/health" 2>/dev/null && echo && break
+  if [ "$i" -eq 30 ]; then
+    echo "❌ The service didn't answer on port ${PORT} within 30 s. Last log lines:"
+    journalctl -u era -n 30 --no-pager 2>/dev/null || true
+    exit 1
+  fi
+  sleep 1
+done
 echo
 echo "✅ Installed. Web app: http://<server-ip>:${PORT}/"
 echo "   iPhone/iPad userscript: http://<server-ip>:${PORT}/userscript/english-reading-assistant.ios.user.js"

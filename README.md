@@ -111,9 +111,11 @@ tools/build-safari.sh
 ```bash
 cd server
 cp .env.example .env      # 设置 API_TOKEN、AI_BASE_URL、AI_API_KEY、AI_MODEL
-npm install --include=optional
+ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --include=optional
 npm start                  # http://localhost:8080
 ```
+
+`ONNXRUNTIME_NODE_INSTALL_CUDA=skip`：Kokoro 朗读依赖的 onnxruntime-node 在 Linux x64 上默认会从 GitHub 下载 225 MB 的 CUDA（GPU）库，且没有超时，国内服务器上会一直卡住；Kokoro 只用 CPU，CPU 版的库已包含在 npm 包里，不需要这一步。
 
 ### 一键部署到云服务器
 
@@ -124,6 +126,18 @@ deploy/deploy.sh root@<服务器IP> 8080
 
 脚本会上传 `server/`，在服务器上安装 Node（npmmirror 镜像）、依赖、systemd 服务 `era`，并打开防火墙端口。云厂商的**安全组**需放行该端口。
 日志：`journalctl -u era -f`；升级：再次运行 `deploy.sh`（保留 `data/` 与 `.env`）。
+
+### 在服务器上从 GitHub 拉取安装
+
+```bash
+apt-get install -y git || yum install -y git
+git clone https://github.com/EuHs/english-reading-assistant.git /tmp/era-src
+PORT=8080 AI_API_KEY=你的key bash /tmp/era-src/deploy/install.sh
+# 升级：cd /tmp/era-src && git pull && PORT=8080 bash deploy/install.sh
+```
+
+安装分 5 步：Node.js → 程序文件（`/opt/era`）→ npm 依赖 → systemd 服务 → 防火墙。第 3 步从 npmmirror 下载约 150 MB，通常几分钟；超过 20 分钟（`NPM_TIMEOUT`，秒）会改为不装可选的 Kokoro 朗读依赖，服务器照常可用，网页朗读改用浏览器语音。
+v1.4.0 及更早的 `install.sh` 在 x86 服务器上会卡在第 3 步（原因见上方 `ONNXRUNTIME_NODE_INSTALL_CUDA`）：按 Ctrl+C 结束，`git pull` 后重新运行即可，不用清理。
 
 部署完成后在扩展/脚本“设置 → 服务器”填写 `http://<IP>:8080` 与 API Token 并启用；或在网页应用“设置 → 生成扩展/油猴脚本配置文件”，再到扩展里导入。
 

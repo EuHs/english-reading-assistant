@@ -9,6 +9,9 @@ export const VOICES = [
   ['bf_emma', '英式女声 Emma'], ['bf_isabella', '英式女声 Isabella'], ['bm_george', '英式男声 George'], ['bm_fable', '英式男声 Fable'],
 ];
 
+const MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+const readText = (file) => { try { return fs.readFileSync(file, 'utf8').trim(); } catch { return null; } };
+
 export class TTS {
   constructor({ dataDir, enabled, dtype, hfEndpoint }) {
     this.enabled = enabled;
@@ -34,7 +37,12 @@ export class TTS {
         tf.env.cacheDir = this.modelDir;
         if (this.hfEndpoint) tf.env.remoteHost = this.hfEndpoint.replace(/\/?$/, '/');
         const { KokoroTTS } = await import('kokoro-js');
-        this.model = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', { dtype: this.dtype, device: 'cpu' });
+        // transformers.js streams the model straight to its final path, so a restart mid-download leaves a truncated
+        // file that every later load fails on ("Protobuf parsing failed"). Trust the cache only after a load completed.
+        const dir = path.join(this.modelDir, MODEL), done = path.join(dir, '.era-complete');
+        if (readText(done) !== this.dtype) fs.rmSync(dir, { recursive: true, force: true });
+        this.model = await KokoroTTS.from_pretrained(MODEL, { dtype: this.dtype, device: 'cpu' });
+        fs.writeFileSync(done, this.dtype);
         this.error = null;
         return this.model;
       } catch (e) {
