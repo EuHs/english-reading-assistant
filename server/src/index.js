@@ -183,6 +183,14 @@ api.get('/fetch', wrap(async (req, res) => {
 }));
 
 app.use('/api', api);
+// userscripts installed from this server also update from it (jsDelivr may be unreachable for the user)
+app.get('/userscript/:file', (req, res, next) => {
+  const file = path.join(ROOT, 'public', 'userscript', path.basename(req.params.file));
+  if (!file.endsWith('.user.js') || !fs.existsSync(file)) return next();
+  const self = `${req.protocol}://${req.get('host')}/userscript/`;
+  res.type('text/javascript; charset=utf-8').set('Cache-Control', 'no-cache')
+    .send(fs.readFileSync(file, 'utf8').replace(/https:\/\/cdn\.jsdelivr\.net\/gh\/EuHs\/english-reading-assistant@main\/userscript\//g, self));
+});
 app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h', index: 'index.html' }));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

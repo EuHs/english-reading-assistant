@@ -48,20 +48,46 @@ async function fetchFirst(urls, timeout) {
 }
 
 let dictData = null, rootsData = null, dictLoading = null;
-/** The offline dictionary (~7 MB) is downloaded on the first lookup that the server can't answer. */
-async function loadDict() {
-  if (dictData) return true;
-  if (dictLoading) return dictLoading;
-  dictLoading = (async () => {
+// Userscripts reads stored values only when asked, so the ~7 MB dictionary can be kept there and is downloaded
+// once. Tampermonkey / Violentmonkey hand every stored value to every page, so there it stays in page memory.
+const KEEP_DICT = typeof GM !== 'undefined' && !!GM.info && GM.info.scriptHandler === 'Userscripts';
+const DICT_KEY = 'offlineDict.v1', DICT_FAILED_KEY = 'offlineDictFailed', DICT_RETRY_MS = 30 * 60 * 1000;
+
+/** Offline dictionary into memory: the saved copy, else one download. Resolves 'memory' | 'saved' | 'downloaded'. */
+function loadDict() {
+  if (dictData) return Promise.resolve('memory');
+  dictLoading = dictLoading || (async () => {
     const parse = (t) => { try { return t ? JSON.parse(t) : null; } catch (e) { return null; } };
-    const get = async (f, timeout) => parse(await fetchFirst(await sources('/data/' + f, REPO_CDNS.map((u) => u + f)), timeout).catch(() => null));
-    const slow = setTimeout(() => ERA.UI.toast('首次查词：正在下载离线词典（约 7 MB）…', 4000), 800);
-    [dictData, rootsData] = await Promise.all([get('dict.json', 60000), get('roots.json', 20000)]);
-    clearTimeout(slow);
-    if (!dictData) dictLoading = null; // allow a retry later
-    return !!dictData;
-  })();
+    if (KEEP_DICT) {
+      const saved = await GMX.get(DICT_KEY, null);
+      if (saved && (dictData = parse(saved.dict))) { rootsData = parse(saved.roots); return 'saved'; }
+    }
+    // after a failed download wait a while instead of retrying on every lookup (unless the sources changed, e.g. a server was added)
+    const bases = await sources('/data/', REPO_CDNS);
+    const failed = await GMX.get(DICT_FAILED_KEY, null);
+    if (failed && failed.from === bases.join(' ') && Date.now() - failed.at < DICT_RETRY_MS) throw new Error('recently failed');
+    ERA.UI.toast(`正在下载离线词典（约 7 MB${KEEP_DICT ? '，只需下载一次' : ''}）…`, 4000);
+    for (const base of bases) {
+      const roots = await gmRequest({ url: base + 'roots.json', timeout: 15000 }); // small file first: is this host reachable?
+      if (!roots.ok) continue;
+      const dict = await gmRequest({ url: base + 'dict.json', timeout: 120000 });
+      if (!(dictData = dict.ok ? parse(dict.text) : null)) continue;
+      rootsData = parse(roots.text);
+      if (KEEP_DICT) await GMX.set(DICT_KEY, { dict: dict.text, roots: roots.text, at: Date.now() }).catch(() => {});
+      await GMX.set(DICT_FAILED_KEY, null);
+      ERA.UI.toast(KEEP_DICT ? '离线词典已保存到本机，以后查词不用再下载' : '离线词典已下载', 3000);
+      return 'downloaded';
+    }
+    await GMX.set(DICT_FAILED_KEY, { at: Date.now(), from: bases.join(' ') });
+    throw new Error('download failed');
+  })().catch((e) => { dictLoading = null; throw e; });
   return dictLoading;
+}
+
+async function downloadDictNow() {
+  await GMX.set(DICT_FAILED_KEY, null);
+  try { if ((await loadDict()) !== 'downloaded') ERA.UI.toast('离线词典已在本机，可直接查词', 2500); }
+  catch (e) { ERA.UI.toast('离线词典下载失败：所有下载地址都连不上', 4000); }
 }
 
 const P = {
@@ -72,15 +98,16 @@ const P = {
   setData: (k, v) => GMX.set(k, v),
   request: (o) => gmRequest(o),
   async lookup(word) {
-    // ask the configured server first instead of downloading 7 MB on a phone
     const cfg = await P.getConfig();
-    const viaServer = async () => {
-      if (!cfg.server.enabled || !cfg.server.baseUrl) return null;
-      try { return await ERA.serverCall('GET', (cfg.server.endpoints.dict || '/api/dict') + '/' + encodeURIComponent(word), null, cfg); } catch (e) { return null; }
-    };
-    if (!dictData) { const r = await viaServer(); if (r) return r; }
-    if (await loadDict()) return ERA.dictLookup(dictData, rootsData, word);
-    return { word, found: false, error: '离线词典下载失败（无法连接词典下载地址）。在设置里启用服务器后会改用服务器查词。' };
+    // with a server, look words up there instead of loading 7 MB on a phone
+    if (!dictData && cfg.server.enabled && cfg.server.baseUrl) {
+      try { const r = await ERA.serverCall('GET', (cfg.server.endpoints.dict || '/api/dict') + '/' + encodeURIComponent(word), null, cfg, 10000); if (r) return r; } catch (e) { /* server down: offline dictionary */ }
+    }
+    // a first download may take a while: it continues in the background and later lookups use it
+    const state = await Promise.race([loadDict().then(() => 'ready', () => 'failed'), new Promise((res) => setTimeout(() => res('pending'), 8000))]);
+    if (state === 'ready') return ERA.dictLookup(dictData, rootsData, word);
+    return { word, found: false, error: state === 'pending' ? '离线词典下载中（约 7 MB），下载完再查即可。'
+      : `离线词典下载失败：${cfg.server.enabled ? '服务器和 jsDelivr 都连不上' : 'jsDelivr 连不上，在设置里启用服务器后会改用服务器查词'}。可在菜单「📥 下载离线词典」重试。` };
   },
 };
 
@@ -205,6 +232,7 @@ const MENU = [
   ['📂 打开本地 PDF', pickLocalPdf],
   ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
   ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
+  ['📥 下载离线词典', downloadDictNow],
   ['🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); }],
 ];
 const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');

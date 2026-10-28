@@ -154,13 +154,13 @@ ERA.aiConfigured = function (cfg) {
 };
 
 /* ---------- Server client ---------- */
-ERA.serverCall = async function (method, path, body, cfgIn) {
+ERA.serverCall = async function (method, path, body, cfgIn, timeout = 90000) {
   const cfg = cfgIn || (await ERA.P.getConfig());
   const s = cfg.server;
   if (!s || !s.baseUrl) throw new Error('未配置服务器');
   const headers = { 'Content-Type': 'application/json' };
   if (s.apiToken) headers.Authorization = 'Bearer ' + s.apiToken;
-  const res = await ERA.P.request({ url: s.baseUrl.replace(/\/+$/, '') + path, method, headers, body: body ? JSON.stringify(body) : undefined, timeout: 90000 });
+  const res = await ERA.P.request({ url: s.baseUrl.replace(/\/+$/, '') + path, method, headers, body: body ? JSON.stringify(body) : undefined, timeout });
   let data = null;
   try { data = res.text ? JSON.parse(res.text) : null; } catch (e) { /* non-json */ }
   if (!res.ok) throw new Error((data && data.error) || `服务器错误 ${res.status}`);

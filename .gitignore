@@ -10,3 +10,4 @@ deploy/era-config.json
 # generated
 safari/
 dist/*.zip
+server/public/userscript/
