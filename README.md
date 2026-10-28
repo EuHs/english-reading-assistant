@@ -56,7 +56,7 @@ userscript/    platform.user.js（GM 适配 + PDF 浮层 + 悬浮菜单）→ �
 server/        Node.js 服务：src/(index, db, service, lexicon, tts)  public/(网页应用 + shared 副本 + 词典)
 deploy/        install.sh（服务器上运行）、deploy.sh（本机一键上传安装）
 tools/         build-dict.mjs（从 ECDICT 生成词典）、build.mjs（同步 shared、打包脚本与扩展）、build-safari.sh
-dist/          dict.json / roots.json（油猴脚本 @resource）、扩展 zip
+dist/          dict.json / roots.json（油猴脚本运行时下载）、扩展 zip
 ```
 
 修改 `shared/` 或 `userscript/platform.user.js` 后运行 `node tools/build.mjs`。
@@ -82,13 +82,16 @@ tools/build-safari.sh
 
 - Android / 桌面：Tampermonkey 或 Violentmonkey（Android 用 Kiwi / Edge Canary / Firefox），安装
   `https://cdn.jsdelivr.net/gh/EuHs/english-reading-assistant@main/userscript/english-reading-assistant.user.js`
-  - 离线词典通过 `@resource` 在安装时下载并缓存
 - iPhone / iPad：Safari + [Userscripts](https://apps.apple.com/app/userscripts/id1463298887)，安装 **iOS 专用版**
   `https://cdn.jsdelivr.net/gh/EuHs/english-reading-assistant@main/userscript/english-reading-assistant.ios.user.js`
   - Userscripts 不支持 `@resource`、脚本菜单和 `GM_getValue`，所以 iOS 版去掉了这些声明，否则安装会出错
   - 先在 设置 → App → Safari → 扩展 里启用 Userscripts，并允许“所有网站”；Safari 打开上面的地址后，点地址栏的 “大小”(aA) 菜单 → Userscripts → 安装
-  - 离线词典在第一次查词时下载（约 7 MB，之后由 Safari 缓存）；如果启用了服务器，会先用服务器查词，不下载
   - iOS 上用 Tampermonkey App 也可以安装上面的完整版
+- **jsDelivr 打不开时**（中国大陆常见）：部署服务器后从服务器安装，
+  `http://<服务器IP>:8080/userscript/english-reading-assistant.ios.user.js`（完整版去掉 `.ios`），网页应用“设置”页也有这两个链接
+- 脚本不依赖 `@require` / `@resource`（这些 CDN 下载失败时管理器往往不报错，脚本却缺文件）：
+  - pdf.js 打包在脚本里；约 1 MB 的 PDF 解析组件在第一次打开 PDF 时下载，依次尝试：你的服务器 → npmmirror → jsDelivr → unpkg。页面禁止 Worker 时自动改在主线程解析
+  - 离线词典（约 7 MB）在第一次查词时下载：启用服务器时先直接用服务器查词；否则依次尝试你的服务器 → jsDelivr 的几个节点
 - 脚本菜单：设置、生词本、打开本地 PDF、用阅读器打开 PDF 链接、显示/隐藏标记、同步
 - 悬浮按钮「英」：手机上（以及管理器没有脚本菜单时）显示在屏幕右侧，点开就是上面的菜单；上下拖动可移开，位置会记住。可在 设置 → 悬浮菜单按钮 中改为总是显示 / 不显示
 - 手机上没有右键：选中文字后底部弹出工具条（译 / 🔊 / 高亮 / 下划线 / 批注 / ＋生词 / ★好句 / 语法）

@@ -3,17 +3,11 @@ const GMX = {
   get: typeof GM_getValue === 'function' ? async (k, d) => GM_getValue(k, d) : async (k, d) => GM.getValue(k, d),
   set: typeof GM_setValue === 'function' ? async (k, v) => GM_setValue(k, v) : async (k, v) => GM.setValue(k, v),
   xhr: typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : typeof GM !== 'undefined' && GM.xmlHttpRequest ? GM.xmlHttpRequest : null,
-  resource(name) {
-    try { if (typeof GM_getResourceText === 'function') return GM_getResourceText(name); } catch (e) { /* not provided */ }
-    return null;
-  },
   menu(label, fn) {
     if (typeof GM_registerMenuCommand === 'function') GM_registerMenuCommand(label, fn);
     else if (typeof GM !== 'undefined' && GM.registerMenuCommand) GM.registerMenuCommand(label, fn);
   },
 };
-
-const DICT_CDN = 'https://cdn.jsdelivr.net/gh/EuHs/english-reading-assistant@main/dist/';
 
 function gmRequest(o, responseType) {
   return new Promise((resolve) => {
@@ -33,31 +27,42 @@ function gmRequest(o, responseType) {
   });
 }
 
+/* ---------- downloads: the user's server first, then public CDNs (jsDelivr is often unreachable in mainland China) ---------- */
+const REPO_CDNS = ['cdn', 'fastly', 'gcore'].map((h) => `https://${h}.jsdelivr.net/gh/EuHs/english-reading-assistant@main/dist/`);
+
+async function sources(serverPath, publicUrls) {
+  const cfg = await P.getConfig();
+  const base = cfg.server.enabled && cfg.server.baseUrl ? cfg.server.baseUrl.replace(/\/+$/, '') : '';
+  return [...(base ? [base + serverPath] : []), ...publicUrls];
+}
+
+/** Text of the first URL that answers; each gets its own timeout so one blocked host can't stall the rest. */
+async function fetchFirst(urls, timeout) {
+  const errs = [];
+  for (const url of urls) {
+    const r = await gmRequest({ url, timeout });
+    if (r.ok && r.text && r.text.length > 100) return r.text;
+    errs.push(url.split('/')[2] + (r.status ? ' HTTP ' + r.status : ' 无法连接'));
+  }
+  throw new Error(errs.join('；'));
+}
+
 let dictData = null, rootsData = null, dictLoading = null;
-/** Bundled @resource (Tampermonkey) or one download from the CDN; the page fetch lets Safari's HTTP cache keep it. */
+/** The offline dictionary (~7 MB) is downloaded on the first lookup that the server can't answer. */
 async function loadDict() {
   if (dictData) return true;
   if (dictLoading) return dictLoading;
   dictLoading = (async () => {
     const parse = (t) => { try { return t ? JSON.parse(t) : null; } catch (e) { return null; } };
-    dictData = parse(GMX.resource('dict'));
-    rootsData = parse(GMX.resource('roots'));
-    if (!dictData) {
-      const get = async (f, timeout) => {
-        try { const r = await fetch(DICT_CDN + f); if (r.ok) return await r.json(); } catch (e) { /* CSP or offline: try the manager */ }
-        const r = await gmRequest({ url: DICT_CDN + f, timeout });
-        return r.ok ? parse(r.text) : null;
-      };
-      const slow = setTimeout(() => ERA.UI.toast('首次查词：正在下载离线词典（约 7 MB）…', 4000), 800);
-      [dictData, rootsData] = await Promise.all([get('dict.json', 90000), get('roots.json', 30000)]);
-      clearTimeout(slow);
-    }
+    const get = async (f, timeout) => parse(await fetchFirst(await sources('/data/' + f, REPO_CDNS.map((u) => u + f)), timeout).catch(() => null));
+    const slow = setTimeout(() => ERA.UI.toast('首次查词：正在下载离线词典（约 7 MB）…', 4000), 800);
+    [dictData, rootsData] = await Promise.all([get('dict.json', 60000), get('roots.json', 20000)]);
+    clearTimeout(slow);
     if (!dictData) dictLoading = null; // allow a retry later
     return !!dictData;
   })();
   return dictLoading;
 }
-const hasBundledDict = () => !!GMX.resource('dict');
 
 const P = {
   name: 'userscript',
@@ -67,46 +72,66 @@ const P = {
   setData: (k, v) => GMX.set(k, v),
   request: (o) => gmRequest(o),
   async lookup(word) {
-    // without a bundled dictionary, ask the configured server first instead of downloading 7 MB on a phone
+    // ask the configured server first instead of downloading 7 MB on a phone
     const cfg = await P.getConfig();
     const viaServer = async () => {
       if (!cfg.server.enabled || !cfg.server.baseUrl) return null;
       try { return await ERA.serverCall('GET', (cfg.server.endpoints.dict || '/api/dict') + '/' + encodeURIComponent(word), null, cfg); } catch (e) { return null; }
     };
-    if (!hasBundledDict() && !dictData) { const r = await viaServer(); if (r) return r; }
+    if (!dictData) { const r = await viaServer(); if (r) return r; }
     if (await loadDict()) return ERA.dictLookup(dictData, rootsData, word);
-    return viaServer();
+    return { word, found: false, error: '离线词典下载失败（无法连接词典下载地址）。在设置里启用服务器后会改用服务器查词。' };
   },
 };
 
 /* ---------- PDF overlay reader (mobile friendly) ---------- */
-const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
-const PDFJS_WORKER = PDFJS_CDN + 'pdf.worker.min.js';
-/**
- * The @require copy is missing when the manager skipped it, or when the page has an AMD define()
- * (common on desktop sites, which iPad Safari gets): pdf.js then registers with that loader instead
- * of setting pdfjsLib. Fall back to loading it with module/exports/define shadowed.
- */
-let pdfjsLoading = null;
+// pdf.js itself is bundled into this script (loadBundledPdfjs, appended by tools/build.mjs); only its ~1 MB
+// parser worker is downloaded on first use — npmmirror is reachable in mainland China, jsDelivr often is not.
+const PDFJS_VER = '3.11.174';
+const WORKER_URLS = [
+  `https://registry.npmmirror.com/pdfjs-dist/${PDFJS_VER}/files/build/pdf.worker.min.js`,
+  `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VER}/build/pdf.worker.min.js`,
+  `https://unpkg.com/pdfjs-dist@${PDFJS_VER}/build/pdf.worker.min.js`,
+];
+
 function ensurePdfjs() {
-  if (typeof pdfjsLib !== 'undefined') return Promise.resolve(true);
-  pdfjsLoading = pdfjsLoading || (async () => {
-    let code = null;
-    try { const r = await fetch(PDFJS_CDN + 'pdf.min.js'); if (r.ok) code = await r.text(); } catch (e) { /* CSP: try the manager */ }
-    if (!code) { const r = await gmRequest({ url: PDFJS_CDN + 'pdf.min.js', timeout: 60000 }); code = r.ok ? r.text : null; }
-    if (!code) throw new Error('下载 pdf.js 失败');
+  if (typeof pdfjsLib === 'undefined') globalThis.pdfjsLib = loadBundledPdfjs();
+  if (!pdfjsLib.getDocument) throw new Error('pdf.js 初始化失败');
+}
+
+/** Can this page start a worker from a blob: URL? A strict CSP (worker-src / script-src) says no. */
+function blobWorkerAllowed() {
+  return new Promise((resolve) => {
+    try {
+      const url = URL.createObjectURL(new Blob(['postMessage(1)'], { type: 'text/javascript' }));
+      const w = new Worker(url);
+      const done = (ok) => { clearTimeout(t); w.terminate(); URL.revokeObjectURL(url); resolve(ok); };
+      const t = setTimeout(() => done(false), 3000);
+      w.onmessage = () => done(true);
+      w.onerror = () => done(false);
+    } catch (e) { resolve(false); }
+  });
+}
+
+let workerReady = null;
+function ensurePdfWorker(status) {
+  workerReady = workerReady || (async () => {
+    status('首次打开：正在下载 PDF 解析组件（约 1 MB）…');
+    const code = await fetchFirst(await sources('/lib/pdf.worker.min.js', WORKER_URLS), 30000)
+      .catch((e) => { throw new Error(`PDF 解析组件下载失败（${e.message}）。在设置里启用服务器后会改从你的服务器下载。`); });
+    if (await blobWorkerAllowed()) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+      return;
+    }
+    // the page forbids workers: parse on the main thread (pdf.js uses globalThis.pdfjsWorker when present)
     const mod = { exports: {} };
     new Function('module', 'exports', 'define', code)(mod, mod.exports, undefined);
-    if (!mod.exports.getDocument) throw new Error('pdf.js 初始化失败');
-    globalThis.pdfjsLib = mod.exports;
-    return true;
-  })().catch((e) => { pdfjsLoading = null; throw e; });
-  return pdfjsLoading;
+    globalThis.pdfjsWorker = mod.exports;
+  })().catch((e) => { workerReady = null; throw e; });
+  return workerReady;
 }
 
 async function openPdfOverlay(source) {
-  try { await ensurePdfjs(); } catch (e) { return ERA.UI.toast('pdf.js 未加载，无法打开 PDF：' + e.message, 5000); }
-  pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
   document.getElementById('era-pdf-overlay')?.remove();
   const ov = document.createElement('div');
   ov.id = 'era-pdf-overlay';
@@ -126,8 +151,12 @@ async function openPdfOverlay(source) {
   ov.querySelector('[data-a=in]').onclick = () => ERA.PdfReader.zoom(1.15);
   ov.querySelector('[data-a=out]').onclick = () => ERA.PdfReader.zoom(1 / 1.15);
   ov.querySelector('[data-a=book]').onclick = () => ERA.UI.showBook();
-  body.innerHTML = '<div style="color:#fff;text-align:center;padding:40px">正在加载 PDF…</div>';
+  const status = (msg) => { body.innerHTML = `<div style="color:#fff;text-align:center;padding:40px;line-height:1.6">${ERA.escapeHtml(msg)}</div>`; };
+  status('正在加载 PDF…');
   try {
+    ensurePdfjs();
+    await ensurePdfWorker(status);
+    status('正在读取 PDF…');
     let data, info;
     if (source instanceof File) { data = await source.arrayBuffer(); info = { name: source.name }; }
     else {
@@ -138,7 +167,7 @@ async function openPdfOverlay(source) {
     await ERA.PdfReader.open(body, data, info);
     ov.querySelector('[data-t]').textContent = ERA.pageMetaOverride.title;
   } catch (e) {
-    body.innerHTML = `<div style="color:#fff;text-align:center;padding:40px">打开失败：${ERA.escapeHtml(e.message)}</div>`;
+    status(`打开失败：${e.message}（v${ERA.VERSION}）`);
   }
 }
 
@@ -146,7 +175,12 @@ function pickLocalPdf() {
   const inp = document.createElement('input');
   inp.type = 'file';
   inp.accept = 'application/pdf,.pdf';
-  inp.onchange = () => inp.files[0] && openPdfOverlay(inp.files[0]);
+  // keep it in the page: some iPadOS Safari versions never fire change on a detached file input
+  document.getElementById('era-pdf-input')?.remove();
+  inp.id = 'era-pdf-input';
+  inp.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+  document.body.appendChild(inp);
+  inp.onchange = () => { const f = inp.files[0]; inp.remove(); if (f) openPdfOverlay(f); };
   inp.click();
 }
 
@@ -183,6 +217,7 @@ const FAB_CSS = `:host{all:initial}
 .menu button{all:unset;display:block;box-sizing:border-box;width:100%;padding:10px 12px;border-radius:8px;cursor:pointer}
 .menu button:active,.menu button:hover{background:#f3f4f6}
 .menu .muted{color:#6b7280;font-size:12px}
+.menu .ver{padding:4px 12px 2px;font-size:11px}
 @media (prefers-color-scheme:dark){.menu{background:#1f2937;color:#f9fafb}.menu button:active,.menu button:hover{background:#374151}.menu .muted{color:#9ca3af}}`;
 
 let fabHost = null;
@@ -208,7 +243,8 @@ async function updateFab(cfg) {
     menu = document.createElement('div');
     menu.className = 'menu';
     menu.innerHTML = MENU.map(([l], i) => `<button data-i="${i}">${l}</button>`).join('') +
-      (hasMenuApi ? '<button data-i="hide" class="muted">隐藏此按钮（可在设置中恢复）</button>' : '<button data-i="hide" class="muted">本页暂时隐藏</button>');
+      (hasMenuApi ? '<button data-i="hide" class="muted">隐藏此按钮（可在设置中恢复）</button>' : '<button data-i="hide" class="muted">本页暂时隐藏</button>') +
+      `<div class="muted ver">英语阅读助手 v${ERA.VERSION}</div>`;
     root.appendChild(menu);
     menu.style.top = Math.max(8, Math.min(innerHeight - menu.offsetHeight - 8, y + 19 - menu.offsetHeight / 2)) + 'px';
     fab.classList.add('open');

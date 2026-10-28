@@ -28,9 +28,14 @@ node -v
 echo "==> 2/5 App files -> $APP"
 id era >/dev/null 2>&1 || useradd --system --home "$APP" --shell /usr/sbin/nologin era
 mkdir -p "$APP"
-# keep data/ and .env across upgrades
-tar -C "$SRC" --exclude=node_modules --exclude=data --exclude=.env -cf - . | tar -C "$APP" -xf -
+# keep data/ and .env across upgrades; explicit top-level list because tar --exclude=data
+# would also drop public/data (the dictionary the server loads at startup)
+(cd "$SRC" && tar -cf - $(ls -A | grep -vxE 'node_modules|data|\.env')) | tar -C "$APP" -xf -
 mkdir -p "$APP/data"
+# userscripts, installable from http://<server>:PORT/userscript/ where the jsDelivr CDN is unreachable
+if ls "$SRC"/../userscript/english-reading-assistant*.user.js >/dev/null 2>&1; then
+  mkdir -p "$APP/public/userscript" && cp "$SRC"/../userscript/english-reading-assistant*.user.js "$APP/public/userscript/"
+fi
 if [ -f "$SRC/.env" ] && [ ! -f "$APP/.env" ]; then cp "$SRC/.env" "$APP/.env"; fi
 if [ ! -f "$APP/.env" ]; then
   cp "$APP/.env.example" "$APP/.env"
@@ -80,6 +85,7 @@ sleep 2
 curl -fsS "http://127.0.0.1:${PORT}/api/health" && echo
 echo
 echo "✅ Installed. Web app: http://<server-ip>:${PORT}/"
+echo "   iPhone/iPad userscript: http://<server-ip>:${PORT}/userscript/english-reading-assistant.ios.user.js"
 echo "   API token: $(grep ^API_TOKEN= "$APP/.env" | cut -d= -f2)"
 echo "   Logs:      journalctl -u era -f"
 echo "   Cloud firewall / security group: allow inbound TCP ${PORT}."

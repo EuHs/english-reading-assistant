@@ -214,7 +214,7 @@ ERA.UI = {
 
   /* ---------- renderers ---------- */
   dictHtml(d) {
-    if (!d || !d.found) return `<div class="muted">离线词典未收录该词</div>`;
+    if (!d || !d.found) return d && d.error ? `<div class="err">${this.esc(d.error)}</div>` : `<div class="muted">离线词典未收录该词</div>`;
     const ex = d.exchange || {};
     const forms = Object.entries(ERA.EXCHANGE_LABELS).filter(([k]) => k !== '0' && ex[k]).map(([k, l]) => `<span class="chip">${l}: ${this.esc(ex[k])}</span>`).join('');
     return `

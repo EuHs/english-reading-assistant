@@ -8,8 +8,10 @@ TARGET="${1:?usage: deploy/deploy.sh user@host [port]}"
 PORT="${2:-8080}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STAGE="$(mktemp -d)"
-mkdir -p "$STAGE/era-src/deploy" "$STAGE/era-src/server"
-tar -C "$ROOT/server" --exclude=node_modules --exclude=data --exclude=.env -cf - . | tar -C "$STAGE/era-src/server" -xf -
+mkdir -p "$STAGE/era-src/deploy" "$STAGE/era-src/server" "$STAGE/era-src/userscript"
+# explicit top-level list: tar --exclude=data would also drop public/data (the dictionary the server loads)
+(cd "$ROOT/server" && tar -cf - $(ls -A | grep -vxE 'node_modules|data|\.env')) | tar -C "$STAGE/era-src/server" -xf -
+cp "$ROOT"/userscript/english-reading-assistant*.user.js "$STAGE/era-src/userscript/"
 cp "$ROOT/deploy/install.sh" "$STAGE/era-src/deploy/"
 # deploy/server.env (git-ignored) becomes the server's .env on first install
 [ -f "$ROOT/deploy/server.env" ] && cp "$ROOT/deploy/server.env" "$STAGE/era-src/server/.env"

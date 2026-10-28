@@ -415,6 +415,9 @@
         <div class="bar"><button class="btn gh" id="exp1">导出服务器 AI 配置（含密钥）</button><button class="btn gh" id="exp0">导出（不含密钥）</button><label class="btn gh">导入<input type="file" id="imp" accept=".json" hidden></label></div>
         <div class="bar"><button class="btn gh" id="extcfg">生成扩展 / 油猴脚本配置文件</button><span class="muted">导入到扩展或油猴脚本的“设置 → 导入”，自动填好服务器地址与 Token，并使用服务器 AI。</span></div>
         <div class="bar"><a class="btn gh" id="backup" href="#">备份全部数据 (JSON)</a></div></div>
+      <div class="card" style="margin-top:12px"><h3 style="margin-top:0">从本服务器安装油猴脚本</h3>
+        <div class="muted">jsDelivr 打不开时用这里的地址安装（与 GitHub 上的同一版本）。</div>
+        <div class="bar"><a class="btn gh" href="/userscript/english-reading-assistant.ios.user.js">iPhone / iPad（Safari + Userscripts）</a><a class="btn gh" href="/userscript/english-reading-assistant.user.js">Tampermonkey / Violentmonkey</a></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Kokoro 离线朗读</h3>
         <div class="muted">状态：${voices.status.ready ? '✅ 已加载' : voices.status.loading ? '⏳ 加载中' : voices.status.enabled ? '首次朗读时加载模型' : '未启用'}${voices.status.error ? ' · 错误：' + esc(voices.status.error) : ''}</div>
         <div class="row"><label>音色</label><select id="voice">${voices.voices.map(([v, n]) => `<option value="${v}" ${kv === v ? 'selected' : ''}>${n}</option>`).join('')}</select><button class="btn gh" id="try">试听</button></div>
