@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.3.0
+// @version      1.3.1
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -33,7 +33,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.3.0';
+ERA.VERSION = '1.3.1';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -2045,9 +2045,32 @@ const P = {
 };
 
 /* ---------- PDF overlay reader (mobile friendly) ---------- */
-const PDFJS_WORKER = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
+const PDFJS_WORKER = PDFJS_CDN + 'pdf.worker.min.js';
+/**
+ * The @require copy is missing when the manager skipped it, or when the page has an AMD define()
+ * (common on desktop sites, which iPad Safari gets): pdf.js then registers with that loader instead
+ * of setting pdfjsLib. Fall back to loading it with module/exports/define shadowed.
+ */
+let pdfjsLoading = null;
+function ensurePdfjs() {
+  if (typeof pdfjsLib !== 'undefined') return Promise.resolve(true);
+  pdfjsLoading = pdfjsLoading || (async () => {
+    let code = null;
+    try { const r = await fetch(PDFJS_CDN + 'pdf.min.js'); if (r.ok) code = await r.text(); } catch (e) { /* CSP: try the manager */ }
+    if (!code) { const r = await gmRequest({ url: PDFJS_CDN + 'pdf.min.js', timeout: 60000 }); code = r.ok ? r.text : null; }
+    if (!code) throw new Error('下载 pdf.js 失败');
+    const mod = { exports: {} };
+    new Function('module', 'exports', 'define', code)(mod, mod.exports, undefined);
+    if (!mod.exports.getDocument) throw new Error('pdf.js 初始化失败');
+    globalThis.pdfjsLib = mod.exports;
+    return true;
+  })().catch((e) => { pdfjsLoading = null; throw e; });
+  return pdfjsLoading;
+}
+
 async function openPdfOverlay(source) {
-  if (typeof pdfjsLib === 'undefined') return ERA.UI.toast('pdf.js 未加载，无法打开 PDF');
+  try { await ensurePdfjs(); } catch (e) { return ERA.UI.toast('pdf.js 未加载，无法打开 PDF：' + e.message, 5000); }
   pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER;
   document.getElementById('era-pdf-overlay')?.remove();
   const ov = document.createElement('div');

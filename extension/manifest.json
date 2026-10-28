@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "英语阅读助手 English Reading Assistant",
   "short_name": "ERA",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "PDF/网页英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根时态分析、语法分析、生词本与服务器同步。",
   "permissions": ["storage", "unlimitedStorage", "contextMenus", "tabs", "scripting", "webNavigation"],
   "host_permissions": ["<all_urls>"],
