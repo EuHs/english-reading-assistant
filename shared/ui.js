@@ -19,10 +19,10 @@ ERA.UI_CSS = `
 .btn.unv{background:#e11d48}.btn.unp{background:#7c3aed}
 .tb .sep{width:1px;background:var(--line);margin:3px 2px}
 .dot{width:14px;height:14px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.15)}
-.card{position:absolute;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
+.card{position:fixed;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
   border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);z-index:2;overflow:hidden}
 .card.fixed{position:fixed}
-.hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:move;user-select:none;background:var(--soft)}
+.hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:move;user-select:none;-webkit-user-select:none;touch-action:none;background:var(--soft)}
 .hd .t{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .x{all:unset;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:0 4px}
 .bd{padding:12px;overflow:auto;flex:1}
@@ -62,9 +62,11 @@ input[type=text]{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
 .mark{background:#fef08a;color:#111;border-radius:3px;padding:0 2px}
 .meta{font-size:12px;color:var(--muted)}
 @media (max-width:640px){
-  .card{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100vw;max-height:62vh;border-radius:14px 14px 0 0}
-  .gpanel{left:0!important;right:0!important;top:auto!important;bottom:0!important;width:100vw;max-height:75vh;resize:none}
-  .tb{position:fixed;left:8px!important;right:8px;top:auto!important;bottom:calc(64vh + 8px)}
+  .card{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100vw;max-height:var(--sheet,62vh);border-radius:14px 14px 0 0}
+  .gpanel{left:0!important;right:0!important;top:auto!important;bottom:0!important;width:100vw;max-height:var(--sheet,75vh);resize:none}
+  .hd{padding-top:14px;position:relative}
+  .hd::before{content:'';position:absolute;left:50%;top:5px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--muted);opacity:.45}
+  .tb{position:fixed;left:8px!important;right:8px;top:auto!important;bottom:calc(var(--sheet,62vh) + 10px)}
   .tb.nocard{bottom:16px}
   .tb button{padding:8px 9px;font-size:14px}
 }`;
@@ -81,6 +83,10 @@ ERA.UI = {
     this.root.innerHTML = `<style>${ERA.UI_CSS}</style><div class="wrap"></div>`;
     this.wrap = this.root.querySelector('.wrap');
     document.documentElement.appendChild(this.host);
+    if (!this.resizeHooked) {
+      this.resizeHooked = true; // e.g. iPad rotation: bring every card back on screen
+      addEventListener('resize', () => this.wrap && this.wrap.querySelectorAll('.card').forEach((c) => { delete c.dataset.dragged; this.keepInView(c); }));
+    }
   },
 
   h(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; },
@@ -167,25 +173,55 @@ ERA.UI = {
     btn.title = state === 'here' ? `已在${book}（本文）· 点击取消` : state === 'other' ? `${book}已收录（来自其他文章）· 点击加入本处` : `加入${book}`;
   },
 
+  /** Drag by the header (mouse, touch or pen). On phones the card is a bottom sheet: dragging changes its height. */
   makeDraggable(card) {
     const hd = card.querySelector('.hd');
-    let sx, sy, ox, oy, fixed;
-    const move = (e) => {
-      const p = e.touches ? e.touches[0] : e;
-      card.style.left = ox + p.clientX - sx + 'px';
-      card.style.top = oy + p.clientY - sy + 'px';
-      card.style.right = 'auto';
-    };
-    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
-    hd.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.x') || window.innerWidth <= 640) return;
-      fixed = getComputedStyle(card).position === 'fixed';
+    hd.addEventListener('pointerdown', (e) => {
+      if (e.button > 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      const phone = matchMedia('(max-width:640px)').matches;
       const r = card.getBoundingClientRect();
-      sx = e.clientX; sy = e.clientY;
-      ox = r.left + (fixed ? 0 : window.scrollX); oy = r.top + (fixed ? 0 : window.scrollY);
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      const start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, h: r.height };
+      try { hd.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+      const move = (ev) => {
+        if (phone) {
+          const h = Math.max(innerHeight * 0.2, Math.min(innerHeight * 0.92, start.h - (ev.clientY - start.y)));
+          this.wrap.style.setProperty('--sheet', Math.round(h) + 'px');
+          return;
+        }
+        card.dataset.dragged = '1';
+        // keep at least part of the header on screen so it can always be dragged back
+        card.style.left = Math.max(60 - r.width, Math.min(innerWidth - 60, start.left + ev.clientX - start.x)) + 'px';
+        card.style.top = Math.max(0, Math.min(innerHeight - 40, start.top + ev.clientY - start.y)) + 'px';
+        card.style.right = card.style.bottom = 'auto';
+      };
+      const up = () => { hd.removeEventListener('pointermove', move); hd.removeEventListener('pointerup', up); hd.removeEventListener('pointercancel', up); };
+      hd.addEventListener('pointermove', move);
+      hd.addEventListener('pointerup', up);
+      hd.addEventListener('pointercancel', up);
     });
+  },
+
+  /** Put a floating card next to the selection, fully inside the viewport (it is position:fixed). */
+  placeCard(card, rect) {
+    card.style.visibility = 'hidden';
+    this.wrap.appendChild(card);
+    const w = card.offsetWidth, h = card.offsetHeight, gap = 6;
+    card.style.left = Math.max(8, Math.min(rect.left, innerWidth - w - 8)) + 'px';
+    if (rect.bottom + gap + h <= innerHeight - 8) card.style.top = rect.bottom + gap + 'px';
+    // above the selection: anchor the bottom edge so a taller card grows upward, away from the text
+    else if (rect.top - gap - h >= 8) { card.style.top = 'auto'; card.style.bottom = innerHeight - rect.top + gap + 'px'; }
+    else card.style.top = Math.max(8, innerHeight - h - 8) + 'px';
+    card.style.visibility = '';
+    // AI results arrive later and make the card taller: keep its bottom on screen unless the user moved it
+    if (window.ResizeObserver) new ResizeObserver(() => this.keepInView(card)).observe(card);
+  },
+
+  keepInView(card) {
+    if (!card.isConnected || card.dataset.dragged || matchMedia('(max-width:640px)').matches) return;
+    const r = card.getBoundingClientRect();
+    if (r.top < 8 || r.bottom > innerHeight - 8) { card.style.bottom = 'auto'; card.style.top = Math.max(8, Math.min(r.top, innerHeight - r.height - 8)) + 'px'; }
+    if (r.right > innerWidth - 8) card.style.left = Math.max(8, innerWidth - r.width - 8) + 'px';
   },
 
   card(title, bodyHtml, { cls = '', fixed = false } = {}) {
@@ -197,7 +233,7 @@ ERA.UI = {
     if (fixed) this.wrap.appendChild(card);
     else {
       const tb = this.wrap.querySelector('.tb');
-      this.place(card, tb ? tb.getBoundingClientRect() : this.anchorRect(), 6);
+      this.placeCard(card, tb ? tb.getBoundingClientRect() : this.anchorRect());
     }
     const tb = this.wrap.querySelector('.tb');
     if (tb) tb.classList.remove('nocard');

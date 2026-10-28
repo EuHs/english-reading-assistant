@@ -21,17 +21,22 @@ ERA.Store = {
       roots: payload.roots && payload.roots.length ? payload.roots : e.roots, forms: payload.forms || e.forms, tenses: payload.tenses || e.tenses,
       etymology: payload.etymology || e.etymology,
     });
-    if (!e.occurrences.some((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url)) e.occurrences.push(occ);
+    const same = e.occurrences.find((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url);
+    if (!same) e.occurrences.push(occ);
+    else if (occ.sentence_translation && !same.sentence_translation) same.sentence_translation = occ.sentence_translation; // AI run after saving
     await ERA.P.setData('vocab', list);
     return this.enqueue('word', payload);
   },
 
   async addPhrase(payload) {
     const list = await this.phrases();
-    if (!list.some((x) => x.text === payload.text && x.article && payload.article && x.article.url === payload.article.url)) {
-      list.unshift({ id: ERA.uid(), created: new Date().toISOString(), ...payload });
-      await ERA.P.setData('phrases', list);
+    const same = list.find((x) => x.text === payload.text && x.article && payload.article && x.article.url === payload.article.url);
+    if (!same) list.unshift({ id: ERA.uid(), created: new Date().toISOString(), ...payload });
+    else { // AI translation run after saving
+      if (payload.translation && !same.translation) same.translation = payload.translation;
+      if (payload.sentence_translation && !same.sentence_translation) same.sentence_translation = payload.sentence_translation;
     }
+    await ERA.P.setData('phrases', list);
     return this.enqueue('phrase', payload);
   },
 

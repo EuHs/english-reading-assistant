@@ -10,7 +10,7 @@ ERA.articleCategory = async function (meta, cfg) {
   const key = 'cat:' + meta.url;
   const stored = await ERA.P.getData(key, null);
   if (stored) return (ERA.categoryCache[meta.url] = stored);
-  if (!ERA.aiConfigured(cfg)) return null;
+  if (!ERA.aiAuto(cfg)) return null; // manual mode: the server's keyword/AI classifier decides
   try {
     const excerpt = ERA.pageExcerpt ? ERA.pageExcerpt() : ERA.mainText(document).slice(0, 1500);
     const c = await ERA.aiClassify(meta, excerpt);
@@ -46,30 +46,45 @@ ERA.Actions = {
   async translate() {
     const UI = ERA.UI, { text, sentence } = UI.state;
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
     if (ERA.isSingleWord(text)) {
       const d = await ERA.P.lookup(text);
       const card = UI.card('词典', `${UI.dictHtml(d || { word: text })}
-        <div class="ai-ctx">${hasAI ? UI.loading('AI 结合语境翻译…') : '<div class="muted">配置 AI 后可获得语境释义、词根与时态分析</div>'}</div>
-        <div class="btns"><button class="btn" data-x="analyze" ${hasAI ? '' : 'disabled'}>AI 词根/时态分析</button><button class="btn gh" data-x="vocab">＋生词本</button></div>`);
+        <div class="ai-ctx">${hasAI ? '' : '<div class="muted">配置 AI 后可获得语境释义、词根与时态分析</div>'}</div>
+        <div class="btns">${hasAI && !auto ? '<button class="btn" data-x="ctx">AI 语境翻译</button>' : ''}<button class="btn" data-x="analyze" ${hasAI ? '' : 'disabled'}>AI 词根/时态分析</button><button class="btn gh" data-x="vocab">＋生词本</button></div>`);
       this.bindBookButton(card.querySelector('[data-x=vocab]'), 'vocab');
       card.querySelector('[data-x=analyze]').onclick = (e) => this.analyzeInto(card, e.target);
-      if (hasAI) {
+      const box = card.querySelector('.ai-ctx');
+      const contextual = (btn) => {
+        if (btn) btn.disabled = true;
+        box.innerHTML = UI.loading('AI 结合语境翻译…');
         ERA.aiTranslate(text, sentence).then((r) => {
-          card.querySelector('.ai-ctx').innerHTML = `<div class="sec"><h4>语境释义</h4><div>${UI.esc(r.translation)}</div>${r.sentence_translation ? `<div class="sentence" style="margin-top:4px">${UI.esc(sentence)}</div><div class="muted">${UI.esc(r.sentence_translation)}</div>` : ''}</div>`;
-        }).catch((e) => { card.querySelector('.ai-ctx').innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; });
-      }
+          box.innerHTML = `<div class="sec"><h4>语境释义</h4><div>${UI.esc(r.translation)}</div>${r.sentence_translation ? `<div class="sentence" style="margin-top:4px">${UI.esc(sentence)}</div><div class="muted">${UI.esc(r.sentence_translation)}</div>` : ''}</div>`;
+          if (btn) btn.remove();
+        }).catch((e) => { box.innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; if (btn) btn.disabled = false; });
+      };
+      if (auto) contextual();
+      else if (hasAI) card.querySelector('[data-x=ctx]').onclick = (e) => contextual(e.target);
       return;
     }
-    const card = UI.card('翻译', `<div class="tr">${UI.esc(text)} ${UI.spk(text)}</div><div class="res">${hasAI ? UI.loading('AI 翻译中…') : '<div class="muted">句子翻译需要 AI：请在设置中配置 AI 接口</div>'}</div>`);
-    if (!hasAI) return;
-    try {
-      const r = await ERA.aiTranslate(text, sentence !== text ? sentence : '');
-      card.querySelector('.res').innerHTML = `<div class="sec"><h4>译文</h4><div class="tr">${UI.esc(r.translation)}</div>${r.notes ? `<div class="muted">${UI.esc(r.notes)}</div>` : ''}</div>
-        <div class="btns"><button class="btn gh" data-x="phrase">★加入好词好句</button><button class="btn gh" data-x="grammar">语法分析</button></div>`;
-      this.bindBookButton(card.querySelector('[data-x=phrase]'), 'phrase', () => this.addPhrase(r));
-      card.querySelector('[data-x=grammar]').onclick = () => this.grammar();
-    } catch (e) { card.querySelector('.res').innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; }
+    const card = UI.card('翻译', `<div class="tr">${UI.esc(text)} ${UI.spk(text)}</div>
+      <div class="res">${hasAI ? '' : '<div class="muted">句子翻译需要 AI：请在设置中配置 AI 接口</div>'}</div>
+      <div class="btns">${hasAI && !auto ? '<button class="btn" data-x="tr">AI 翻译</button>' : ''}<button class="btn gh" data-x="phrase">★加入好词好句</button><button class="btn gh" data-x="grammar" ${hasAI ? '' : 'disabled'}>语法分析</button></div>`);
+    let result = null; // handed to addPhrase so it doesn't translate again
+    this.bindBookButton(card.querySelector('[data-x=phrase]'), 'phrase', () => this.addPhrase(result));
+    card.querySelector('[data-x=grammar]').onclick = () => this.grammar();
+    const res = card.querySelector('.res');
+    const translateIt = async (btn) => {
+      if (btn) btn.disabled = true;
+      res.innerHTML = UI.loading('AI 翻译中…');
+      try {
+        result = await ERA.aiTranslate(text, sentence !== text ? sentence : '');
+        res.innerHTML = `<div class="sec"><h4>译文</h4><div class="tr">${UI.esc(result.translation)}</div>${result.notes ? `<div class="muted">${UI.esc(result.notes)}</div>` : ''}</div>`;
+        if (btn) btn.remove();
+      } catch (e) { res.innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; if (btn) btn.disabled = false; }
+    };
+    if (auto) translateIt();
+    else if (hasAI) card.querySelector('[data-x=tr]').onclick = (e) => translateIt(e.target);
   },
 
   async analyzeInto(card, btn) {
@@ -228,13 +243,13 @@ ERA.Actions = {
     const word = text.replace(/[^A-Za-z'’-]/g, '');
     if (!ERA.isSingleWord(word)) return UI.toast('生词本只接受单个单词，词组请用"好词好句"');
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
-    const card = UI.card('加入生词本', UI.loading(hasAI ? '查词典、AI 分析词根与时态、翻译例句…' : '查词典…'));
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
+    const card = UI.card('加入生词本', UI.loading(auto ? '查词典、AI 分析词根与时态、翻译例句…' : '查词典…'));
     const meta = ERA.extractMeta();
     const d = (await ERA.P.lookup(word)) || {};
     const [ai, tr, cat] = await Promise.all([
-      UI.state.ai && UI.state.ai.word === word ? UI.state.ai : hasAI && cfg.ui.autoAnalyzeOnAdd ? ERA.aiWord(word, sentence).catch((e) => ({ error: e.message })) : null,
-      hasAI && cfg.ui.translateSentenceOnAdd ? ERA.aiTranslate(word, sentence).catch(() => null) : null,
+      UI.state.ai && UI.state.ai.word === word ? UI.state.ai : auto && cfg.ui.autoAnalyzeOnAdd ? ERA.aiWord(word, sentence).catch((e) => ({ error: e.message })) : null,
+      auto && cfg.ui.translateSentenceOnAdd ? ERA.aiTranslate(word, sentence).catch(() => null) : null,
       ERA.articleCategory(meta, cfg),
     ]);
     const a = ai && !ai.error ? ai : {};
@@ -252,12 +267,36 @@ ERA.Actions = {
     await this.markSaved('vocab', text, payload.lemma);
     card.querySelector('.bd').innerHTML = `
       ${UI.dictHtml(d.found ? d : { found: false })}
-      ${a.lemma ? UI.aiWordHtml(a) : ai && ai.error ? `<div class="err">AI：${UI.esc(ai.error)}</div>` : ''}
-      <div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, word)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>
+      <div class="ai-word">${a.lemma ? UI.aiWordHtml(a) : ai && ai.error ? `<div class="err">AI：${UI.esc(ai.error)}</div>` : ''}</div>
+      <div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, word)}</div><div class="muted sent-tr">${UI.esc(payload.sentence_translation)}</div></div>
       ${this.metaHtml(payload.article)}
       <div class="sec muted">✅ 已保存到${ERA.P.remoteBook ? '' : '本地'}生词本 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '服务器同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
-      <div class="btns"><button class="btn unv" data-x="undo">★ 取消加入</button></div>`;
+      <div class="btns"><button class="btn unv" data-x="undo">★ 取消加入</button>${hasAI && !a.lemma ? '<button class="btn gh" data-x="ai-word">AI 词根/时态分析</button>' : ''}${hasAI && !payload.sentence_translation ? '<button class="btn gh" data-x="ai-sent">AI 翻译例句</button>' : ''}</div>`;
     card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelVocab(payload.lemma); };
+    // manual AI mode (or a failed AI call): run it now and add the result to the saved word
+    const later = (sel, run) => {
+      const btn = card.querySelector(sel);
+      if (btn) btn.onclick = async () => {
+        btn.disabled = true;
+        try { Object.assign(payload, await run()); await ERA.Store.addWord(payload); btn.remove(); } catch (e) { UI.toast('AI：' + e.message); btn.disabled = false; }
+      };
+    };
+    later('[data-x=ai-word]', async () => {
+      const box = card.querySelector('.ai-word');
+      box.innerHTML = UI.loading('AI 分析词根、词形与时态…');
+      const x = await ERA.aiWord(word, sentence).catch((e) => { box.innerHTML = ''; throw e; });
+      box.innerHTML = UI.aiWordHtml(x);
+      return {
+        phonetic: payload.phonetic || x.phonetic || '', pos: payload.pos || x.pos || '', meaning: x.meaning || payload.meaning || '',
+        definitions: x.definitions || [], morphology: x.morphology && x.morphology.length ? x.morphology : payload.morphology,
+        roots: x.roots && x.roots.length ? x.roots : payload.roots, forms: x.forms || payload.forms, tenses: x.tenses || [], etymology: x.etymology || '',
+      };
+    });
+    later('[data-x=ai-sent]', async () => {
+      const t = await ERA.aiTranslate(word, sentence);
+      card.querySelector('.sent-tr').textContent = t.sentence_translation || '';
+      return { sentence_translation: t.sentence_translation || '', meaning: payload.meaning || t.translation || '' };
+    });
     window.getSelection().removeAllRanges();
     this.repaint();
   },
@@ -265,12 +304,12 @@ ERA.Actions = {
   async addPhrase(pre) {
     const UI = ERA.UI, { text, sentence } = UI.state;
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
-    const card = UI.card('加入好词好句', UI.loading(hasAI ? 'AI 翻译中…' : '保存中…'));
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
+    const card = UI.card('加入好词好句', UI.loading(auto ? 'AI 翻译中…' : '保存中…'));
     const meta = ERA.extractMeta();
     const isSentence = text.length > 60 || /[.!?]$/.test(text);
     const [tr, cat] = await Promise.all([
-      pre && pre.translation ? pre : hasAI ? ERA.aiTranslate(text, isSentence ? '' : sentence).catch((e) => ({ error: e.message })) : null,
+      pre && pre.translation ? pre : auto ? ERA.aiTranslate(text, isSentence ? '' : sentence).catch((e) => ({ error: e.message })) : null,
       ERA.articleCategory(meta, cfg),
     ]);
     let sentTr = tr && tr.sentence_translation;
@@ -284,12 +323,26 @@ ERA.Actions = {
     await this.markSaved('phrase', text, ERA.Store.normPhrase(text));
     card.querySelector('.bd').innerHTML = `
       <div class="tr"><b>${UI.esc(text)}</b> ${UI.spk(text)}</div>
-      <div class="tr">${UI.esc(payload.translation)}${tr && tr.error ? `<span class="err">AI：${UI.esc(tr.error)}</span>` : ''}</div>
-      ${!isSentence ? `<div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, text)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>` : ''}
+      <div class="tr ph-tr">${UI.esc(payload.translation)}${tr && tr.error ? `<span class="err">AI：${UI.esc(tr.error)}</span>` : ''}</div>
+      ${!isSentence ? `<div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, text)}</div><div class="muted sent-tr">${UI.esc(payload.sentence_translation)}</div></div>` : ''}
       ${this.metaHtml(payload.article)}
       <div class="sec muted">✅ 已保存到好词好句 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
-      <div class="btns"><button class="btn unp" data-x="undo">★ 取消加入</button></div>`;
+      <div class="btns"><button class="btn unp" data-x="undo">★ 取消加入</button>${hasAI && !payload.translation ? '<button class="btn gh" data-x="ai-tr">AI 翻译</button>' : ''}</div>`;
     card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelPhrase(text); };
+    const aiBtn = card.querySelector('[data-x=ai-tr]');
+    if (aiBtn) aiBtn.onclick = async () => {
+      aiBtn.disabled = true;
+      try {
+        const t = await ERA.aiTranslate(text, isSentence ? '' : sentence);
+        payload.translation = t.translation || '';
+        payload.sentence_translation = (isSentence ? t.translation : t.sentence_translation) || '';
+        card.querySelector('.ph-tr').textContent = payload.translation;
+        const st = card.querySelector('.sent-tr');
+        if (st) st.textContent = payload.sentence_translation;
+        await ERA.Store.addPhrase(payload);
+        aiBtn.remove();
+      } catch (e) { UI.toast('AI：' + e.message); aiBtn.disabled = false; }
+    };
     this.repaint();
   },
 

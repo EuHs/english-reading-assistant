@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.3.4
+// @version      1.4.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -29,7 +29,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.3.4';
+ERA.VERSION = '1.4.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -58,6 +58,7 @@ ERA.defaultConfig = function () {
       translateSentenceOnAdd: true,
       pdfIntercept: true, // extension: open .pdf links in the study reader
       showBookMarks: true, // wavy / double underline under saved 生词 and 好词好句
+      aiMode: 'auto', // 'auto': cards call AI as they open | 'manual': only the AI buttons on the cards do
       fab: 'auto', // userscript floating menu button: auto (no script menu or touch screen) | on | off
     },
     tts: { lang: 'en-US', voice: '', rate: 0.95 },
@@ -382,6 +383,9 @@ ERA.aiClassify = async (meta, excerpt) => {
   const r = await ERA.aiChat(ERA.PROMPTS.classify(meta, excerpt), { json: true });
   return ERA.CATEGORIES.includes(r.category) ? r.category : null;
 };
+
+/** AI is set up and allowed to run without a click (设置 → AI 功能：自动). */
+ERA.aiAuto = (cfg) => ERA.aiConfigured(cfg) && cfg.ui.aiMode !== 'manual';
 
 ERA.aiConfigured = function (cfg) {
   const p = ERA.activeAIProfile(cfg);
@@ -761,17 +765,22 @@ ERA.Store = {
       roots: payload.roots && payload.roots.length ? payload.roots : e.roots, forms: payload.forms || e.forms, tenses: payload.tenses || e.tenses,
       etymology: payload.etymology || e.etymology,
     });
-    if (!e.occurrences.some((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url)) e.occurrences.push(occ);
+    const same = e.occurrences.find((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url);
+    if (!same) e.occurrences.push(occ);
+    else if (occ.sentence_translation && !same.sentence_translation) same.sentence_translation = occ.sentence_translation; // AI run after saving
     await ERA.P.setData('vocab', list);
     return this.enqueue('word', payload);
   },
 
   async addPhrase(payload) {
     const list = await this.phrases();
-    if (!list.some((x) => x.text === payload.text && x.article && payload.article && x.article.url === payload.article.url)) {
-      list.unshift({ id: ERA.uid(), created: new Date().toISOString(), ...payload });
-      await ERA.P.setData('phrases', list);
+    const same = list.find((x) => x.text === payload.text && x.article && payload.article && x.article.url === payload.article.url);
+    if (!same) list.unshift({ id: ERA.uid(), created: new Date().toISOString(), ...payload });
+    else { // AI translation run after saving
+      if (payload.translation && !same.translation) same.translation = payload.translation;
+      if (payload.sentence_translation && !same.sentence_translation) same.sentence_translation = payload.sentence_translation;
     }
+    await ERA.P.setData('phrases', list);
     return this.enqueue('phrase', payload);
   },
 
@@ -920,10 +929,10 @@ ERA.UI_CSS = `
 .btn.unv{background:#e11d48}.btn.unp{background:#7c3aed}
 .tb .sep{width:1px;background:var(--line);margin:3px 2px}
 .dot{width:14px;height:14px;border-radius:50%;display:inline-block;border:1px solid rgba(0,0,0,.15)}
-.card{position:absolute;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
+.card{position:fixed;width:min(420px,calc(100vw - 16px));max-height:min(70vh,560px);display:flex;flex-direction:column;background:var(--bg);
   border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.22);z-index:2;overflow:hidden}
 .card.fixed{position:fixed}
-.hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:move;user-select:none;background:var(--soft)}
+.hd{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--line);cursor:move;user-select:none;-webkit-user-select:none;touch-action:none;background:var(--soft)}
 .hd .t{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .x{all:unset;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:0 4px}
 .bd{padding:12px;overflow:auto;flex:1}
@@ -963,9 +972,11 @@ input[type=text]{border:1px solid var(--line);border-radius:6px;padding:5px 8px;
 .mark{background:#fef08a;color:#111;border-radius:3px;padding:0 2px}
 .meta{font-size:12px;color:var(--muted)}
 @media (max-width:640px){
-  .card{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100vw;max-height:62vh;border-radius:14px 14px 0 0}
-  .gpanel{left:0!important;right:0!important;top:auto!important;bottom:0!important;width:100vw;max-height:75vh;resize:none}
-  .tb{position:fixed;left:8px!important;right:8px;top:auto!important;bottom:calc(64vh + 8px)}
+  .card{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100vw;max-height:var(--sheet,62vh);border-radius:14px 14px 0 0}
+  .gpanel{left:0!important;right:0!important;top:auto!important;bottom:0!important;width:100vw;max-height:var(--sheet,75vh);resize:none}
+  .hd{padding-top:14px;position:relative}
+  .hd::before{content:'';position:absolute;left:50%;top:5px;width:36px;height:4px;margin-left:-18px;border-radius:2px;background:var(--muted);opacity:.45}
+  .tb{position:fixed;left:8px!important;right:8px;top:auto!important;bottom:calc(var(--sheet,62vh) + 10px)}
   .tb.nocard{bottom:16px}
   .tb button{padding:8px 9px;font-size:14px}
 }`;
@@ -982,6 +993,10 @@ ERA.UI = {
     this.root.innerHTML = `<style>${ERA.UI_CSS}</style><div class="wrap"></div>`;
     this.wrap = this.root.querySelector('.wrap');
     document.documentElement.appendChild(this.host);
+    if (!this.resizeHooked) {
+      this.resizeHooked = true; // e.g. iPad rotation: bring every card back on screen
+      addEventListener('resize', () => this.wrap && this.wrap.querySelectorAll('.card').forEach((c) => { delete c.dataset.dragged; this.keepInView(c); }));
+    }
   },
 
   h(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; },
@@ -1068,25 +1083,55 @@ ERA.UI = {
     btn.title = state === 'here' ? `已在${book}（本文）· 点击取消` : state === 'other' ? `${book}已收录（来自其他文章）· 点击加入本处` : `加入${book}`;
   },
 
+  /** Drag by the header (mouse, touch or pen). On phones the card is a bottom sheet: dragging changes its height. */
   makeDraggable(card) {
     const hd = card.querySelector('.hd');
-    let sx, sy, ox, oy, fixed;
-    const move = (e) => {
-      const p = e.touches ? e.touches[0] : e;
-      card.style.left = ox + p.clientX - sx + 'px';
-      card.style.top = oy + p.clientY - sy + 'px';
-      card.style.right = 'auto';
-    };
-    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
-    hd.addEventListener('mousedown', (e) => {
-      if (e.target.closest('.x') || window.innerWidth <= 640) return;
-      fixed = getComputedStyle(card).position === 'fixed';
+    hd.addEventListener('pointerdown', (e) => {
+      if (e.button > 0 || e.target.closest('button')) return;
+      e.preventDefault();
+      const phone = matchMedia('(max-width:640px)').matches;
       const r = card.getBoundingClientRect();
-      sx = e.clientX; sy = e.clientY;
-      ox = r.left + (fixed ? 0 : window.scrollX); oy = r.top + (fixed ? 0 : window.scrollY);
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
+      const start = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, h: r.height };
+      try { hd.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+      const move = (ev) => {
+        if (phone) {
+          const h = Math.max(innerHeight * 0.2, Math.min(innerHeight * 0.92, start.h - (ev.clientY - start.y)));
+          this.wrap.style.setProperty('--sheet', Math.round(h) + 'px');
+          return;
+        }
+        card.dataset.dragged = '1';
+        // keep at least part of the header on screen so it can always be dragged back
+        card.style.left = Math.max(60 - r.width, Math.min(innerWidth - 60, start.left + ev.clientX - start.x)) + 'px';
+        card.style.top = Math.max(0, Math.min(innerHeight - 40, start.top + ev.clientY - start.y)) + 'px';
+        card.style.right = card.style.bottom = 'auto';
+      };
+      const up = () => { hd.removeEventListener('pointermove', move); hd.removeEventListener('pointerup', up); hd.removeEventListener('pointercancel', up); };
+      hd.addEventListener('pointermove', move);
+      hd.addEventListener('pointerup', up);
+      hd.addEventListener('pointercancel', up);
     });
+  },
+
+  /** Put a floating card next to the selection, fully inside the viewport (it is position:fixed). */
+  placeCard(card, rect) {
+    card.style.visibility = 'hidden';
+    this.wrap.appendChild(card);
+    const w = card.offsetWidth, h = card.offsetHeight, gap = 6;
+    card.style.left = Math.max(8, Math.min(rect.left, innerWidth - w - 8)) + 'px';
+    if (rect.bottom + gap + h <= innerHeight - 8) card.style.top = rect.bottom + gap + 'px';
+    // above the selection: anchor the bottom edge so a taller card grows upward, away from the text
+    else if (rect.top - gap - h >= 8) { card.style.top = 'auto'; card.style.bottom = innerHeight - rect.top + gap + 'px'; }
+    else card.style.top = Math.max(8, innerHeight - h - 8) + 'px';
+    card.style.visibility = '';
+    // AI results arrive later and make the card taller: keep its bottom on screen unless the user moved it
+    if (window.ResizeObserver) new ResizeObserver(() => this.keepInView(card)).observe(card);
+  },
+
+  keepInView(card) {
+    if (!card.isConnected || card.dataset.dragged || matchMedia('(max-width:640px)').matches) return;
+    const r = card.getBoundingClientRect();
+    if (r.top < 8 || r.bottom > innerHeight - 8) { card.style.bottom = 'auto'; card.style.top = Math.max(8, Math.min(r.top, innerHeight - r.height - 8)) + 'px'; }
+    if (r.right > innerWidth - 8) card.style.left = Math.max(8, innerWidth - r.width - 8) + 'px';
   },
 
   card(title, bodyHtml, { cls = '', fixed = false } = {}) {
@@ -1098,7 +1143,7 @@ ERA.UI = {
     if (fixed) this.wrap.appendChild(card);
     else {
       const tb = this.wrap.querySelector('.tb');
-      this.place(card, tb ? tb.getBoundingClientRect() : this.anchorRect(), 6);
+      this.placeCard(card, tb ? tb.getBoundingClientRect() : this.anchorRect());
     }
     const tb = this.wrap.querySelector('.tb');
     if (tb) tb.classList.remove('nocard');
@@ -1241,7 +1286,8 @@ ERA.Settings = {
       <div class="sec"><h4>朗读与界面</h4>
         <div class="row"><label>语音</label><select name="tts.voice"><option value="">自动</option>${voices.map((v) => opt(v.name, cfg.tts.voice, v.name + ' (' + v.lang + ')')).join('')}</select><button class="btn gh" data-x="tts">试听</button></div>
         <div class="row"><label>语速</label><input type="text" name="tts.rate" value="${esc(cfg.tts.rate)}" style="width:80px"></div>
-        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
+        <div class="row"><label>AI 功能</label><select name="ui.aiMode">${opt('auto', cfg.ui.aiMode, '自动：查词、翻译、加入时自动调用 AI')}${opt('manual', cfg.ui.aiMode, '手动：点卡片上的 AI 按钮才调用')}</select></div>
+        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '自动模式下：加入生词本时 AI 分析词根/时态', translateSentenceOnAdd: '自动模式下：加入时 AI 翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
           .map(([k, l]) => `<div class="row"><label><input type="checkbox" name="ui.${k}" ${cfg.ui[k] ? 'checked' : ''}> ${l}</label></div>`).join('')}
         ${ERA.P && ERA.P.name === 'userscript' ? `<div class="row"><label>悬浮菜单按钮</label><select name="ui.fab">${opt('auto', cfg.ui.fab, '自动（手机上显示）')}${opt('on', cfg.ui.fab, '总是显示')}${opt('off', cfg.ui.fab, '不显示（管理器无菜单时仍显示）')}</select></div>` : ''}
       </div>
@@ -1384,7 +1430,7 @@ ERA.articleCategory = async function (meta, cfg) {
   const key = 'cat:' + meta.url;
   const stored = await ERA.P.getData(key, null);
   if (stored) return (ERA.categoryCache[meta.url] = stored);
-  if (!ERA.aiConfigured(cfg)) return null;
+  if (!ERA.aiAuto(cfg)) return null; // manual mode: the server's keyword/AI classifier decides
   try {
     const excerpt = ERA.pageExcerpt ? ERA.pageExcerpt() : ERA.mainText(document).slice(0, 1500);
     const c = await ERA.aiClassify(meta, excerpt);
@@ -1420,30 +1466,45 @@ ERA.Actions = {
   async translate() {
     const UI = ERA.UI, { text, sentence } = UI.state;
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
     if (ERA.isSingleWord(text)) {
       const d = await ERA.P.lookup(text);
       const card = UI.card('词典', `${UI.dictHtml(d || { word: text })}
-        <div class="ai-ctx">${hasAI ? UI.loading('AI 结合语境翻译…') : '<div class="muted">配置 AI 后可获得语境释义、词根与时态分析</div>'}</div>
-        <div class="btns"><button class="btn" data-x="analyze" ${hasAI ? '' : 'disabled'}>AI 词根/时态分析</button><button class="btn gh" data-x="vocab">＋生词本</button></div>`);
+        <div class="ai-ctx">${hasAI ? '' : '<div class="muted">配置 AI 后可获得语境释义、词根与时态分析</div>'}</div>
+        <div class="btns">${hasAI && !auto ? '<button class="btn" data-x="ctx">AI 语境翻译</button>' : ''}<button class="btn" data-x="analyze" ${hasAI ? '' : 'disabled'}>AI 词根/时态分析</button><button class="btn gh" data-x="vocab">＋生词本</button></div>`);
       this.bindBookButton(card.querySelector('[data-x=vocab]'), 'vocab');
       card.querySelector('[data-x=analyze]').onclick = (e) => this.analyzeInto(card, e.target);
-      if (hasAI) {
+      const box = card.querySelector('.ai-ctx');
+      const contextual = (btn) => {
+        if (btn) btn.disabled = true;
+        box.innerHTML = UI.loading('AI 结合语境翻译…');
         ERA.aiTranslate(text, sentence).then((r) => {
-          card.querySelector('.ai-ctx').innerHTML = `<div class="sec"><h4>语境释义</h4><div>${UI.esc(r.translation)}</div>${r.sentence_translation ? `<div class="sentence" style="margin-top:4px">${UI.esc(sentence)}</div><div class="muted">${UI.esc(r.sentence_translation)}</div>` : ''}</div>`;
-        }).catch((e) => { card.querySelector('.ai-ctx').innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; });
-      }
+          box.innerHTML = `<div class="sec"><h4>语境释义</h4><div>${UI.esc(r.translation)}</div>${r.sentence_translation ? `<div class="sentence" style="margin-top:4px">${UI.esc(sentence)}</div><div class="muted">${UI.esc(r.sentence_translation)}</div>` : ''}</div>`;
+          if (btn) btn.remove();
+        }).catch((e) => { box.innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; if (btn) btn.disabled = false; });
+      };
+      if (auto) contextual();
+      else if (hasAI) card.querySelector('[data-x=ctx]').onclick = (e) => contextual(e.target);
       return;
     }
-    const card = UI.card('翻译', `<div class="tr">${UI.esc(text)} ${UI.spk(text)}</div><div class="res">${hasAI ? UI.loading('AI 翻译中…') : '<div class="muted">句子翻译需要 AI：请在设置中配置 AI 接口</div>'}</div>`);
-    if (!hasAI) return;
-    try {
-      const r = await ERA.aiTranslate(text, sentence !== text ? sentence : '');
-      card.querySelector('.res').innerHTML = `<div class="sec"><h4>译文</h4><div class="tr">${UI.esc(r.translation)}</div>${r.notes ? `<div class="muted">${UI.esc(r.notes)}</div>` : ''}</div>
-        <div class="btns"><button class="btn gh" data-x="phrase">★加入好词好句</button><button class="btn gh" data-x="grammar">语法分析</button></div>`;
-      this.bindBookButton(card.querySelector('[data-x=phrase]'), 'phrase', () => this.addPhrase(r));
-      card.querySelector('[data-x=grammar]').onclick = () => this.grammar();
-    } catch (e) { card.querySelector('.res').innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; }
+    const card = UI.card('翻译', `<div class="tr">${UI.esc(text)} ${UI.spk(text)}</div>
+      <div class="res">${hasAI ? '' : '<div class="muted">句子翻译需要 AI：请在设置中配置 AI 接口</div>'}</div>
+      <div class="btns">${hasAI && !auto ? '<button class="btn" data-x="tr">AI 翻译</button>' : ''}<button class="btn gh" data-x="phrase">★加入好词好句</button><button class="btn gh" data-x="grammar" ${hasAI ? '' : 'disabled'}>语法分析</button></div>`);
+    let result = null; // handed to addPhrase so it doesn't translate again
+    this.bindBookButton(card.querySelector('[data-x=phrase]'), 'phrase', () => this.addPhrase(result));
+    card.querySelector('[data-x=grammar]').onclick = () => this.grammar();
+    const res = card.querySelector('.res');
+    const translateIt = async (btn) => {
+      if (btn) btn.disabled = true;
+      res.innerHTML = UI.loading('AI 翻译中…');
+      try {
+        result = await ERA.aiTranslate(text, sentence !== text ? sentence : '');
+        res.innerHTML = `<div class="sec"><h4>译文</h4><div class="tr">${UI.esc(result.translation)}</div>${result.notes ? `<div class="muted">${UI.esc(result.notes)}</div>` : ''}</div>`;
+        if (btn) btn.remove();
+      } catch (e) { res.innerHTML = `<div class="err">${UI.esc(e.message)}</div>`; if (btn) btn.disabled = false; }
+    };
+    if (auto) translateIt();
+    else if (hasAI) card.querySelector('[data-x=tr]').onclick = (e) => translateIt(e.target);
   },
 
   async analyzeInto(card, btn) {
@@ -1602,13 +1663,13 @@ ERA.Actions = {
     const word = text.replace(/[^A-Za-z'’-]/g, '');
     if (!ERA.isSingleWord(word)) return UI.toast('生词本只接受单个单词，词组请用"好词好句"');
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
-    const card = UI.card('加入生词本', UI.loading(hasAI ? '查词典、AI 分析词根与时态、翻译例句…' : '查词典…'));
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
+    const card = UI.card('加入生词本', UI.loading(auto ? '查词典、AI 分析词根与时态、翻译例句…' : '查词典…'));
     const meta = ERA.extractMeta();
     const d = (await ERA.P.lookup(word)) || {};
     const [ai, tr, cat] = await Promise.all([
-      UI.state.ai && UI.state.ai.word === word ? UI.state.ai : hasAI && cfg.ui.autoAnalyzeOnAdd ? ERA.aiWord(word, sentence).catch((e) => ({ error: e.message })) : null,
-      hasAI && cfg.ui.translateSentenceOnAdd ? ERA.aiTranslate(word, sentence).catch(() => null) : null,
+      UI.state.ai && UI.state.ai.word === word ? UI.state.ai : auto && cfg.ui.autoAnalyzeOnAdd ? ERA.aiWord(word, sentence).catch((e) => ({ error: e.message })) : null,
+      auto && cfg.ui.translateSentenceOnAdd ? ERA.aiTranslate(word, sentence).catch(() => null) : null,
       ERA.articleCategory(meta, cfg),
     ]);
     const a = ai && !ai.error ? ai : {};
@@ -1626,12 +1687,36 @@ ERA.Actions = {
     await this.markSaved('vocab', text, payload.lemma);
     card.querySelector('.bd').innerHTML = `
       ${UI.dictHtml(d.found ? d : { found: false })}
-      ${a.lemma ? UI.aiWordHtml(a) : ai && ai.error ? `<div class="err">AI：${UI.esc(ai.error)}</div>` : ''}
-      <div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, word)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>
+      <div class="ai-word">${a.lemma ? UI.aiWordHtml(a) : ai && ai.error ? `<div class="err">AI：${UI.esc(ai.error)}</div>` : ''}</div>
+      <div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, word)}</div><div class="muted sent-tr">${UI.esc(payload.sentence_translation)}</div></div>
       ${this.metaHtml(payload.article)}
       <div class="sec muted">✅ 已保存到${ERA.P.remoteBook ? '' : '本地'}生词本 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '服务器同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
-      <div class="btns"><button class="btn unv" data-x="undo">★ 取消加入</button></div>`;
+      <div class="btns"><button class="btn unv" data-x="undo">★ 取消加入</button>${hasAI && !a.lemma ? '<button class="btn gh" data-x="ai-word">AI 词根/时态分析</button>' : ''}${hasAI && !payload.sentence_translation ? '<button class="btn gh" data-x="ai-sent">AI 翻译例句</button>' : ''}</div>`;
     card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelVocab(payload.lemma); };
+    // manual AI mode (or a failed AI call): run it now and add the result to the saved word
+    const later = (sel, run) => {
+      const btn = card.querySelector(sel);
+      if (btn) btn.onclick = async () => {
+        btn.disabled = true;
+        try { Object.assign(payload, await run()); await ERA.Store.addWord(payload); btn.remove(); } catch (e) { UI.toast('AI：' + e.message); btn.disabled = false; }
+      };
+    };
+    later('[data-x=ai-word]', async () => {
+      const box = card.querySelector('.ai-word');
+      box.innerHTML = UI.loading('AI 分析词根、词形与时态…');
+      const x = await ERA.aiWord(word, sentence).catch((e) => { box.innerHTML = ''; throw e; });
+      box.innerHTML = UI.aiWordHtml(x);
+      return {
+        phonetic: payload.phonetic || x.phonetic || '', pos: payload.pos || x.pos || '', meaning: x.meaning || payload.meaning || '',
+        definitions: x.definitions || [], morphology: x.morphology && x.morphology.length ? x.morphology : payload.morphology,
+        roots: x.roots && x.roots.length ? x.roots : payload.roots, forms: x.forms || payload.forms, tenses: x.tenses || [], etymology: x.etymology || '',
+      };
+    });
+    later('[data-x=ai-sent]', async () => {
+      const t = await ERA.aiTranslate(word, sentence);
+      card.querySelector('.sent-tr').textContent = t.sentence_translation || '';
+      return { sentence_translation: t.sentence_translation || '', meaning: payload.meaning || t.translation || '' };
+    });
     window.getSelection().removeAllRanges();
     this.repaint();
   },
@@ -1639,12 +1724,12 @@ ERA.Actions = {
   async addPhrase(pre) {
     const UI = ERA.UI, { text, sentence } = UI.state;
     const cfg = await ERA.P.getConfig();
-    const hasAI = ERA.aiConfigured(cfg);
-    const card = UI.card('加入好词好句', UI.loading(hasAI ? 'AI 翻译中…' : '保存中…'));
+    const hasAI = ERA.aiConfigured(cfg), auto = ERA.aiAuto(cfg);
+    const card = UI.card('加入好词好句', UI.loading(auto ? 'AI 翻译中…' : '保存中…'));
     const meta = ERA.extractMeta();
     const isSentence = text.length > 60 || /[.!?]$/.test(text);
     const [tr, cat] = await Promise.all([
-      pre && pre.translation ? pre : hasAI ? ERA.aiTranslate(text, isSentence ? '' : sentence).catch((e) => ({ error: e.message })) : null,
+      pre && pre.translation ? pre : auto ? ERA.aiTranslate(text, isSentence ? '' : sentence).catch((e) => ({ error: e.message })) : null,
       ERA.articleCategory(meta, cfg),
     ]);
     let sentTr = tr && tr.sentence_translation;
@@ -1658,12 +1743,26 @@ ERA.Actions = {
     await this.markSaved('phrase', text, ERA.Store.normPhrase(text));
     card.querySelector('.bd').innerHTML = `
       <div class="tr"><b>${UI.esc(text)}</b> ${UI.spk(text)}</div>
-      <div class="tr">${UI.esc(payload.translation)}${tr && tr.error ? `<span class="err">AI：${UI.esc(tr.error)}</span>` : ''}</div>
-      ${!isSentence ? `<div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, text)}</div><div class="muted">${UI.esc(payload.sentence_translation)}</div></div>` : ''}
+      <div class="tr ph-tr">${UI.esc(payload.translation)}${tr && tr.error ? `<span class="err">AI：${UI.esc(tr.error)}</span>` : ''}</div>
+      ${!isSentence ? `<div class="sec"><h4>所属语句</h4><div class="sentence">${ERA.highlightWord(sentence, text)}</div><div class="muted sent-tr">${UI.esc(payload.sentence_translation)}</div></div>` : ''}
       ${this.metaHtml(payload.article)}
       <div class="sec muted">✅ 已保存到好词好句 · ${res.synced ? '已同步服务器' : res.reason === 'server-disabled' ? '未启用服务器同步' : '同步失败，稍后重试：' + UI.esc(res.error || '')}</div>
-      <div class="btns"><button class="btn unp" data-x="undo">★ 取消加入</button></div>`;
+      <div class="btns"><button class="btn unp" data-x="undo">★ 取消加入</button>${hasAI && !payload.translation ? '<button class="btn gh" data-x="ai-tr">AI 翻译</button>' : ''}</div>`;
     card.querySelector('[data-x=undo]').onclick = async () => { card.remove(); await this.cancelPhrase(text); };
+    const aiBtn = card.querySelector('[data-x=ai-tr]');
+    if (aiBtn) aiBtn.onclick = async () => {
+      aiBtn.disabled = true;
+      try {
+        const t = await ERA.aiTranslate(text, isSentence ? '' : sentence);
+        payload.translation = t.translation || '';
+        payload.sentence_translation = (isSentence ? t.translation : t.sentence_translation) || '';
+        card.querySelector('.ph-tr').textContent = payload.translation;
+        const st = card.querySelector('.sent-tr');
+        if (st) st.textContent = payload.sentence_translation;
+        await ERA.Store.addPhrase(payload);
+        aiBtn.remove();
+      } catch (e) { UI.toast('AI：' + e.message); aiBtn.disabled = false; }
+    };
     this.repaint();
   },
 

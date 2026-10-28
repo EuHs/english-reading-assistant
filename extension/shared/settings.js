@@ -50,7 +50,8 @@ ERA.Settings = {
       <div class="sec"><h4>朗读与界面</h4>
         <div class="row"><label>语音</label><select name="tts.voice"><option value="">自动</option>${voices.map((v) => opt(v.name, cfg.tts.voice, v.name + ' (' + v.lang + ')')).join('')}</select><button class="btn gh" data-x="tts">试听</button></div>
         <div class="row"><label>语速</label><input type="text" name="tts.rate" value="${esc(cfg.tts.rate)}" style="width:80px"></div>
-        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '加入生词本时自动 AI 分析词根/时态', translateSentenceOnAdd: '加入时自动翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
+        <div class="row"><label>AI 功能</label><select name="ui.aiMode">${opt('auto', cfg.ui.aiMode, '自动：查词、翻译、加入时自动调用 AI')}${opt('manual', cfg.ui.aiMode, '手动：点卡片上的 AI 按钮才调用')}</select></div>
+        ${Object.entries({ showToolbar: '选中文本后显示工具条', autoLookupWord: '选中单词自动查词（桌面端）', autoAnalyzeOnAdd: '自动模式下：加入生词本时 AI 分析词根/时态', translateSentenceOnAdd: '自动模式下：加入时 AI 翻译所属语句', pdfIntercept: '自动用学习阅读器打开 PDF（扩展）', showBookMarks: '在原文显示生词 / 好词好句标记' })
           .map(([k, l]) => `<div class="row"><label><input type="checkbox" name="ui.${k}" ${cfg.ui[k] ? 'checked' : ''}> ${l}</label></div>`).join('')}
         ${ERA.P && ERA.P.name === 'userscript' ? `<div class="row"><label>悬浮菜单按钮</label><select name="ui.fab">${opt('auto', cfg.ui.fab, '自动（手机上显示）')}${opt('on', cfg.ui.fab, '总是显示')}${opt('off', cfg.ui.fab, '不显示（管理器无菜单时仍显示）')}</select></div>` : ''}
       </div>

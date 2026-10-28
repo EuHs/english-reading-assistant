@@ -145,6 +145,9 @@ ERA.aiClassify = async (meta, excerpt) => {
   return ERA.CATEGORIES.includes(r.category) ? r.category : null;
 };
 
+/** AI is set up and allowed to run without a click (设置 → AI 功能：自动). */
+ERA.aiAuto = (cfg) => ERA.aiConfigured(cfg) && cfg.ui.aiMode !== 'manual';
+
 ERA.aiConfigured = function (cfg) {
   const p = ERA.activeAIProfile(cfg);
   if (!p) return false;

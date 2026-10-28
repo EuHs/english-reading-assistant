@@ -116,6 +116,9 @@ export class Service {
       db.prepare('INSERT OR IGNORE INTO word_forms(word_id, form) VALUES(?,?)').run(w.id, word.toLowerCase());
       db.prepare(`INSERT OR IGNORE INTO occurrences(word_id,article_id,surface,sentence,sentence_translation,meaning,source) VALUES(?,?,?,?,?,?,?)`)
         .run(w.id, article.id, word, clip(p.sentence, 1500), clip(p.sentence_translation, 1500), clip(p.meaning, 300), clip(p.source, 30));
+      // same occurrence posted again after a manual AI translation: fill what was empty
+      if (p.sentence_translation) db.prepare(`UPDATE occurrences SET sentence_translation=? WHERE word_id=? AND article_id=? AND sentence=? AND COALESCE(sentence_translation,'')=''`)
+        .run(clip(p.sentence_translation, 1500), w.id, article.id, clip(p.sentence, 1500));
       this.linkRoots(w.id, morphology);
       return { id: w.id, lemma, created };
     });
@@ -256,6 +259,8 @@ export class Service {
       } else db.prepare("UPDATE phrases SET translation=COALESCE(NULLIF(translation,''),?), note=COALESCE(NULLIF(note,''),?) WHERE id=?").run(p.translation || '', p.note || '', ph.id);
       db.prepare('INSERT OR IGNORE INTO phrase_occurrences(phrase_id,article_id,sentence,sentence_translation) VALUES(?,?,?,?)')
         .run(ph.id, article.id, clip(p.sentence, 2000), clip(p.sentence_translation, 2000));
+      if (p.sentence_translation) db.prepare("UPDATE phrase_occurrences SET sentence_translation=? WHERE phrase_id=? AND article_id=? AND sentence=? AND COALESCE(sentence_translation,'')=''")
+        .run(clip(p.sentence_translation, 2000), ph.id, article.id, clip(p.sentence, 2000));
       return { id: Number(ph.id), category: article.category };
     });
   }

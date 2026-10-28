@@ -1,6 +1,6 @@
 {
   "name": "english-reading-assistant-server",
-  "version": "1.3.4",
+  "version": "1.4.0",
   "description": "Vocabulary / phrase book API, quiz, stats and web app for the English Reading Assistant extension.",
   "type": "module",
   "main": "src/index.js",

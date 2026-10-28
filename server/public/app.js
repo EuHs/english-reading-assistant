@@ -418,6 +418,8 @@
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">从本服务器安装油猴脚本</h3>
         <div class="muted">jsDelivr 打不开时用这里的地址安装（与 GitHub 上的同一版本）。</div>
         <div class="bar"><a class="btn gh" href="/userscript/english-reading-assistant.ios.user.js">iPhone / iPad（Safari + Userscripts）</a><a class="btn gh" href="/userscript/english-reading-assistant.user.js">Tampermonkey / Violentmonkey</a></div></div>
+      <div class="card" style="margin-top:12px"><h3 style="margin-top:0">阅读器</h3>
+        <div class="row"><label>AI 功能</label><select id="aimode"><option value="auto">自动：查词、翻译、加入时自动调用 AI</option><option value="manual" ${WebP.ls.get('ui', {}).aiMode === 'manual' ? 'selected' : ''}>手动：点卡片上的 AI 按钮才调用</option></select></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Kokoro 离线朗读</h3>
         <div class="muted">状态：${voices.status.ready ? '✅ 已加载' : voices.status.loading ? '⏳ 加载中' : voices.status.enabled ? '首次朗读时加载模型' : '未启用'}${voices.status.error ? ' · 错误：' + esc(voices.status.error) : ''}</div>
         <div class="row"><label>音色</label><select id="voice">${voices.voices.map(([v, n]) => `<option value="${v}" ${kv === v ? 'selected' : ''}>${n}</option>`).join('')}</select><button class="btn gh" id="try">试听</button></div>
@@ -441,6 +443,7 @@
       ERA.download('era-config.json', ERA.exportConfig(c), 'application/json');
     };
     document.getElementById('backup').onclick = async (e) => { e.preventDefault(); ERA.download('era-backup.json', JSON.stringify(await api('GET', '/api/export')), 'application/json'); };
+    document.getElementById('aimode').onchange = (e) => { WebP.ls.set('ui', { ...WebP.ls.get('ui', {}), aiMode: e.target.value }); toast('已保存'); };
     document.getElementById('voice').onchange = (e) => WebP.ls.set('kokoroVoice', e.target.value);
     document.getElementById('rate').onchange = (e) => WebP.ls.set('tts', { ...WebP.ls.get('tts', {}), rate: +e.target.value || 1 });
     document.getElementById('try').onclick = () => { WebP.ls.set('kokoroVoice', v('voice')); ERA.speak('Reading widely is the best way to build vocabulary.').catch((e) => toast(e.message)); };
