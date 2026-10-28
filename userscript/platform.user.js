@@ -28,7 +28,18 @@ function gmRequest(o, responseType) {
 }
 
 /* ---------- downloads: the user's server first, then public CDNs (jsDelivr is often unreachable in mainland China) ---------- */
-const REPO_CDNS = ['cdn', 'fastly', 'gcore'].map((h) => `https://${h}.jsdelivr.net/gh/EuHs/english-reading-assistant@main/dist/`);
+// cdn.jsdmirror.com is a third-party jsDelivr mirror that mainland China can reach; its files must match
+// ASSET_SHA256 (inserted by tools/build.mjs) before they are used.
+const REPO_CDNS = ['https://cdn.jsdmirror.com', 'https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net', 'https://gcore.jsdelivr.net']
+  .map((h) => `${h}/gh/EuHs/english-reading-assistant@main/dist/`);
+const MUST_VERIFY = (url) => url.startsWith('https://cdn.jsdmirror.com/');
+
+/** true / false, or null when this page can't hash (crypto.subtle needs https). */
+async function sha256Matches(text, file) {
+  if (!globalThis.crypto || !crypto.subtle) return null;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('') === ASSET_SHA256[file];
+}
 
 async function sources(serverPath, publicUrls) {
   const cfg = await P.getConfig();
@@ -36,13 +47,13 @@ async function sources(serverPath, publicUrls) {
   return [...(base ? [base + serverPath] : []), ...publicUrls];
 }
 
-/** Text of the first URL that answers; each gets its own timeout so one blocked host can't stall the rest. */
-async function fetchFirst(urls, timeout) {
+/** Text of the first URL that answers (and passes check); each gets its own timeout so one blocked host can't stall the rest. */
+async function fetchFirst(urls, timeout, check) {
   const errs = [];
   for (const url of urls) {
     const r = await gmRequest({ url, timeout });
-    if (r.ok && r.text && r.text.length > 100) return r.text;
-    errs.push(url.split('/')[2] + (r.status ? ' HTTP ' + r.status : ' 无法连接'));
+    if (r.ok && r.text && r.text.length > 100 && (!check || (await check(r.text, url)))) return r.text;
+    errs.push(url.split('/')[2] + (!r.ok ? (r.status ? ' HTTP ' + r.status : ' 无法连接') : ' 校验失败'));
   }
   throw new Error(errs.join('；'));
 }
@@ -71,7 +82,9 @@ function loadDict() {
       const roots = await gmRequest({ url: base + 'roots.json', timeout: 15000 }); // small file first: is this host reachable?
       if (!roots.ok) continue;
       const dict = await gmRequest({ url: base + 'dict.json', timeout: 120000 });
-      if (!(dictData = dict.ok ? parse(dict.text) : null)) continue;
+      if (!dict.ok) continue;
+      if (MUST_VERIFY(base) && !((await sha256Matches(dict.text, 'dict.json')) && (await sha256Matches(roots.text, 'roots.json')))) continue;
+      if (!(dictData = parse(dict.text))) continue;
       rootsData = parse(roots.text);
       if (KEEP_DICT) await GMX.set(DICT_KEY, { dict: dict.text, roots: roots.text, at: Date.now() }).catch(() => {});
       await GMX.set(DICT_FAILED_KEY, null);
@@ -107,7 +120,7 @@ const P = {
     const state = await Promise.race([loadDict().then(() => 'ready', () => 'failed'), new Promise((res) => setTimeout(() => res('pending'), 8000))]);
     if (state === 'ready') return ERA.dictLookup(dictData, rootsData, word);
     return { word, found: false, error: state === 'pending' ? '离线词典下载中（约 7 MB），下载完再查即可。'
-      : `离线词典下载失败：${cfg.server.enabled ? '服务器和 jsDelivr 都连不上' : 'jsDelivr 连不上，在设置里启用服务器后会改用服务器查词'}。可在菜单「📥 下载离线词典」重试。` };
+      : `离线词典下载失败：${cfg.server.enabled ? '服务器和各下载地址都连不上' : '各下载地址都连不上，在设置里启用服务器后会改用服务器查词'}。可在菜单「📥 下载离线词典」重试。` };
   },
 };
 
@@ -144,7 +157,8 @@ let workerReady = null;
 function ensurePdfWorker(status) {
   workerReady = workerReady || (async () => {
     status('首次打开：正在下载 PDF 解析组件（约 1 MB）…');
-    const code = await fetchFirst(await sources('/lib/pdf.worker.min.js', WORKER_URLS), 30000)
+    // it is code: whatever host served it, it has to be the exact pdf.js release this script was built with
+    const code = await fetchFirst(await sources('/lib/pdf.worker.min.js', WORKER_URLS), 30000, async (text) => (await sha256Matches(text, 'pdf.worker.min.js')) !== false)
       .catch((e) => { throw new Error(`PDF 解析组件下载失败（${e.message}）。在设置里启用服务器后会改从你的服务器下载。`); });
     if (await blobWorkerAllowed()) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));

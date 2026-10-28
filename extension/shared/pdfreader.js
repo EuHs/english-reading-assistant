@@ -2,6 +2,8 @@
  * Used by the extension viewer page and the userscript overlay (mobile). */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
+// The userscript opens the reader inside arbitrary websites, so the text layer resets inherited text styles
+// (letter-spacing, padding …) that would otherwise misplace the invisible text over the drawn page.
 ERA.READER_CSS = `
 .era-reader{background:#525659;padding:12px 0 80px;min-height:100%}
 .era-page{position:relative;margin:0 auto 14px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
@@ -9,6 +11,8 @@ ERA.READER_CSS = `
 .era-page .ph-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#999;font:14px sans-serif}
 .textLayer{position:absolute;text-align:initial;inset:0;overflow:hidden;opacity:1;line-height:1;-webkit-text-size-adjust:none;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;z-index:2}
 .textLayer span:not(.era-mark),.textLayer br{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0% 0%}
+.textLayer span:not(.era-mark){margin:0!important;padding:0!important;border:0!important;letter-spacing:normal!important;word-spacing:normal!important;text-transform:none!important;text-indent:0!important;font-weight:normal!important;font-style:normal!important;font-variant:normal!important;text-shadow:none!important}
+.textLayer .era-mark{letter-spacing:inherit!important;word-spacing:inherit!important;text-transform:inherit!important;font-weight:inherit!important;font-style:inherit!important;margin:0!important;padding:0!important}
 .textLayer span.markedContent{top:0;height:0}
 .textLayer .era-mark{position:static;color:transparent}
 .textLayer ::selection{background:rgba(37,99,235,.3)}
@@ -127,14 +131,30 @@ ERA.PdfReader = {
     p.div.append(canvas, tl);
     const ctx = canvas.getContext('2d');
     await page.render({ canvasContext: ctx, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
-    const task = pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs: [] });
+    const textDivs = [], textDivProperties = new WeakMap();
+    const task = pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs, textDivProperties });
     await task.promise;
+    this.fitTextLayer(p.div, textDivs, textDivProperties, vp.scale);
     const end = document.createElement('div');
     end.className = 'endOfContent';
     tl.appendChild(end);
     tl.addEventListener('mousedown', () => end.classList.add('active'));
     document.addEventListener('mouseup', () => end.classList.remove('active'));
     ERA.Annot.restore(tl, n).catch(() => {});
+  },
+
+  /**
+   * pdf.js sizes each text span from an off-screen canvas measurement. When that font differs from the one the page
+   * really renders (Safari's OffscreenCanvas, site CSS), lines are squeezed or stretched and a selection appears
+   * shifted from the drawn words. Measure the real spans and correct their horizontal scale.
+   */
+  fitTextLayer(pageDiv, divs, props, scale) {
+    const fix = divs.filter((d) => { const pr = props.get(d); return pr && pr.hasText && pr.canvasWidth > 0 && !pr.angle; });
+    if (!fix.length) return;
+    const local = pageDiv.offsetWidth / pageDiv.getBoundingClientRect().width || 1; // undo any ancestor zoom/transform
+    fix.forEach((d) => { d.style.transform = 'none'; });
+    const widths = fix.map((d) => d.getBoundingClientRect().width * local);
+    fix.forEach((d, i) => { if (widths[i] > 0) d.style.transform = `scaleX(${(props.get(d).canvasWidth * scale) / widths[i]})`; });
   },
 
   zoom(f) {

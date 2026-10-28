@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.3.3
+// @version      1.3.4
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -29,7 +29,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.3.3';
+ERA.VERSION = '1.3.4';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -1811,6 +1811,8 @@ ERA.command = function (cmd, selectionText) {
  * Used by the extension viewer page and the userscript overlay (mobile). */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
+// The userscript opens the reader inside arbitrary websites, so the text layer resets inherited text styles
+// (letter-spacing, padding …) that would otherwise misplace the invisible text over the drawn page.
 ERA.READER_CSS = `
 .era-reader{background:#525659;padding:12px 0 80px;min-height:100%}
 .era-page{position:relative;margin:0 auto 14px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.35)}
@@ -1818,6 +1820,8 @@ ERA.READER_CSS = `
 .era-page .ph-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#999;font:14px sans-serif}
 .textLayer{position:absolute;text-align:initial;inset:0;overflow:hidden;opacity:1;line-height:1;-webkit-text-size-adjust:none;text-size-adjust:none;forced-color-adjust:none;transform-origin:0 0;z-index:2}
 .textLayer span:not(.era-mark),.textLayer br{color:transparent;position:absolute;white-space:pre;cursor:text;transform-origin:0% 0%}
+.textLayer span:not(.era-mark){margin:0!important;padding:0!important;border:0!important;letter-spacing:normal!important;word-spacing:normal!important;text-transform:none!important;text-indent:0!important;font-weight:normal!important;font-style:normal!important;font-variant:normal!important;text-shadow:none!important}
+.textLayer .era-mark{letter-spacing:inherit!important;word-spacing:inherit!important;text-transform:inherit!important;font-weight:inherit!important;font-style:inherit!important;margin:0!important;padding:0!important}
 .textLayer span.markedContent{top:0;height:0}
 .textLayer .era-mark{position:static;color:transparent}
 .textLayer ::selection{background:rgba(37,99,235,.3)}
@@ -1936,14 +1940,30 @@ ERA.PdfReader = {
     p.div.append(canvas, tl);
     const ctx = canvas.getContext('2d');
     await page.render({ canvasContext: ctx, viewport: vp, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null }).promise;
-    const task = pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs: [] });
+    const textDivs = [], textDivProperties = new WeakMap();
+    const task = pdfjsLib.renderTextLayer({ textContentSource: page.streamTextContent(), container: tl, viewport: vp, textDivs, textDivProperties });
     await task.promise;
+    this.fitTextLayer(p.div, textDivs, textDivProperties, vp.scale);
     const end = document.createElement('div');
     end.className = 'endOfContent';
     tl.appendChild(end);
     tl.addEventListener('mousedown', () => end.classList.add('active'));
     document.addEventListener('mouseup', () => end.classList.remove('active'));
     ERA.Annot.restore(tl, n).catch(() => {});
+  },
+
+  /**
+   * pdf.js sizes each text span from an off-screen canvas measurement. When that font differs from the one the page
+   * really renders (Safari's OffscreenCanvas, site CSS), lines are squeezed or stretched and a selection appears
+   * shifted from the drawn words. Measure the real spans and correct their horizontal scale.
+   */
+  fitTextLayer(pageDiv, divs, props, scale) {
+    const fix = divs.filter((d) => { const pr = props.get(d); return pr && pr.hasText && pr.canvasWidth > 0 && !pr.angle; });
+    if (!fix.length) return;
+    const local = pageDiv.offsetWidth / pageDiv.getBoundingClientRect().width || 1; // undo any ancestor zoom/transform
+    fix.forEach((d) => { d.style.transform = 'none'; });
+    const widths = fix.map((d) => d.getBoundingClientRect().width * local);
+    fix.forEach((d, i) => { if (widths[i] > 0) d.style.transform = `scaleX(${(props.get(d).canvasWidth * scale) / widths[i]})`; });
   },
 
   zoom(f) {
@@ -1959,6 +1979,7 @@ ERA.PdfReader = {
 };
 
 // ---- userscript/platform.user.js ----
+const ASSET_SHA256 = {"dict.json":"28de07d95c4e6a43c92c87c6636bbd22a2225f0e081e93d841136f5c49eb6efe","roots.json":"3744ca3ea38d75ddb67bd0250e20ebafdfa0c14e9641cf2d72f0da01bfe8eab7","pdf.worker.min.js":"feabdf309770ed24bba31a5467836cdc8cf639c705af27d52b585b041bb8527b"};
 /* Userscript platform adapter (Tampermonkey / Violentmonkey / Userscripts for Safari iOS). */
 const GMX = {
   get: typeof GM_getValue === 'function' ? async (k, d) => GM_getValue(k, d) : async (k, d) => GM.getValue(k, d),
@@ -1989,7 +2010,18 @@ function gmRequest(o, responseType) {
 }
 
 /* ---------- downloads: the user's server first, then public CDNs (jsDelivr is often unreachable in mainland China) ---------- */
-const REPO_CDNS = ['cdn', 'fastly', 'gcore'].map((h) => `https://${h}.jsdelivr.net/gh/EuHs/english-reading-assistant@main/dist/`);
+// cdn.jsdmirror.com is a third-party jsDelivr mirror that mainland China can reach; its files must match
+// ASSET_SHA256 (inserted by tools/build.mjs) before they are used.
+const REPO_CDNS = ['https://cdn.jsdmirror.com', 'https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net', 'https://gcore.jsdelivr.net']
+  .map((h) => `${h}/gh/EuHs/english-reading-assistant@main/dist/`);
+const MUST_VERIFY = (url) => url.startsWith('https://cdn.jsdmirror.com/');
+
+/** true / false, or null when this page can't hash (crypto.subtle needs https). */
+async function sha256Matches(text, file) {
+  if (!globalThis.crypto || !crypto.subtle) return null;
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('') === ASSET_SHA256[file];
+}
 
 async function sources(serverPath, publicUrls) {
   const cfg = await P.getConfig();
@@ -1997,13 +2029,13 @@ async function sources(serverPath, publicUrls) {
   return [...(base ? [base + serverPath] : []), ...publicUrls];
 }
 
-/** Text of the first URL that answers; each gets its own timeout so one blocked host can't stall the rest. */
-async function fetchFirst(urls, timeout) {
+/** Text of the first URL that answers (and passes check); each gets its own timeout so one blocked host can't stall the rest. */
+async function fetchFirst(urls, timeout, check) {
   const errs = [];
   for (const url of urls) {
     const r = await gmRequest({ url, timeout });
-    if (r.ok && r.text && r.text.length > 100) return r.text;
-    errs.push(url.split('/')[2] + (r.status ? ' HTTP ' + r.status : ' 无法连接'));
+    if (r.ok && r.text && r.text.length > 100 && (!check || (await check(r.text, url)))) return r.text;
+    errs.push(url.split('/')[2] + (!r.ok ? (r.status ? ' HTTP ' + r.status : ' 无法连接') : ' 校验失败'));
   }
   throw new Error(errs.join('；'));
 }
@@ -2032,7 +2064,9 @@ function loadDict() {
       const roots = await gmRequest({ url: base + 'roots.json', timeout: 15000 }); // small file first: is this host reachable?
       if (!roots.ok) continue;
       const dict = await gmRequest({ url: base + 'dict.json', timeout: 120000 });
-      if (!(dictData = dict.ok ? parse(dict.text) : null)) continue;
+      if (!dict.ok) continue;
+      if (MUST_VERIFY(base) && !((await sha256Matches(dict.text, 'dict.json')) && (await sha256Matches(roots.text, 'roots.json')))) continue;
+      if (!(dictData = parse(dict.text))) continue;
       rootsData = parse(roots.text);
       if (KEEP_DICT) await GMX.set(DICT_KEY, { dict: dict.text, roots: roots.text, at: Date.now() }).catch(() => {});
       await GMX.set(DICT_FAILED_KEY, null);
@@ -2068,7 +2102,7 @@ const P = {
     const state = await Promise.race([loadDict().then(() => 'ready', () => 'failed'), new Promise((res) => setTimeout(() => res('pending'), 8000))]);
     if (state === 'ready') return ERA.dictLookup(dictData, rootsData, word);
     return { word, found: false, error: state === 'pending' ? '离线词典下载中（约 7 MB），下载完再查即可。'
-      : `离线词典下载失败：${cfg.server.enabled ? '服务器和 jsDelivr 都连不上' : 'jsDelivr 连不上，在设置里启用服务器后会改用服务器查词'}。可在菜单「📥 下载离线词典」重试。` };
+      : `离线词典下载失败：${cfg.server.enabled ? '服务器和各下载地址都连不上' : '各下载地址都连不上，在设置里启用服务器后会改用服务器查词'}。可在菜单「📥 下载离线词典」重试。` };
   },
 };
 
@@ -2105,7 +2139,8 @@ let workerReady = null;
 function ensurePdfWorker(status) {
   workerReady = workerReady || (async () => {
     status('首次打开：正在下载 PDF 解析组件（约 1 MB）…');
-    const code = await fetchFirst(await sources('/lib/pdf.worker.min.js', WORKER_URLS), 30000)
+    // it is code: whatever host served it, it has to be the exact pdf.js release this script was built with
+    const code = await fetchFirst(await sources('/lib/pdf.worker.min.js', WORKER_URLS), 30000, async (text) => (await sha256Matches(text, 'pdf.worker.min.js')) !== false)
       .catch((e) => { throw new Error(`PDF 解析组件下载失败（${e.message}）。在设置里启用服务器后会改从你的服务器下载。`); });
     if (await blobWorkerAllowed()) {
       pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));

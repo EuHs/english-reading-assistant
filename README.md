@@ -91,7 +91,8 @@ tools/build-safari.sh
   `http://<服务器IP>:8080/userscript/english-reading-assistant.ios.user.js`（完整版去掉 `.ios`），网页应用“设置”页也有这两个链接
 - 脚本不依赖 `@require` / `@resource`（这些 CDN 下载失败时管理器往往不报错，脚本却缺文件）：
   - pdf.js 打包在脚本里；约 1 MB 的 PDF 解析组件在第一次打开 PDF 时下载，依次尝试：你的服务器 → npmmirror → jsDelivr → unpkg。页面禁止 Worker 时自动改在主线程解析
-  - 离线词典（约 7 MB）：启用服务器时直接用服务器逐词查询，不下载；否则在第一次查词时下载（依次尝试你的服务器 → jsDelivr 的几个节点）。
+  - 离线词典（约 7 MB）：启用服务器时直接用服务器逐词查询，不下载；否则在第一次查词时下载（依次尝试你的服务器 → 国内可用的 jsDelivr 镜像 cdn.jsdmirror.com → jsDelivr 的几个节点）。
+    第三方镜像下载的文件必须与构建时记录的 SHA-256 一致才会使用；PDF 解析组件是代码，不论来自哪里都校验 SHA-256。
     iOS Userscripts 下载一次后保存在本机，换页面、重开 Safari 都不再下载；Tampermonkey / Violentmonkey 会把脚本存储的全部数据注入每个页面，所以只在当前页面内存里保留。
     下载失败后 30 分钟内不再重试（下载地址变化时例外，例如刚启用服务器），菜单「📥 下载离线词典」可立即重试
 - 从服务器安装的脚本，更新地址会自动指向你的服务器（`/userscript/…`），不依赖 jsDelivr

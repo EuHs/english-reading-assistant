@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const r = (...p) => path.join(root, ...p);
@@ -36,7 +37,10 @@ const VARIANTS = {
     '@inject-into  content'] },
 };
 const shared = SHARED.map((f) => `// ---- shared/${f} ----\n` + fs.readFileSync(r('shared', f), 'utf8'));
-const platform = fs.readFileSync(r('userscript/platform.user.js'), 'utf8');
+// expected SHA-256 of files the userscript downloads, checked before use (see platform.user.js)
+const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(r(f))).digest('hex');
+const assetHashes = `const ASSET_SHA256 = ${JSON.stringify({ 'dict.json': sha256('dist/dict.json'), 'roots.json': sha256('dist/roots.json'), 'pdf.worker.min.js': sha256('extension/lib/pdf.worker.min.js') })};\n`;
+const platform = assetHashes + fs.readFileSync(r('userscript/platform.user.js'), 'utf8');
 // run on first PDF open with module/exports/define shadowed, so a page's AMD loader can't capture it
 const pdfMin = fs.readFileSync(r('extension/lib/pdf.min.js'), 'utf8');
 const pdfjs = `// ---- pdf.js ${pdfMin.match(/const version="([^"]+)"/)[1]} (Apache-2.0, extension/lib/pdf.min.js) ----
