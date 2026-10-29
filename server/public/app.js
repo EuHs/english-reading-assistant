@@ -38,20 +38,72 @@
     return catCounts;
   }
 
-  /* ---------- auth ---------- */
+  /* ---------- auth: the web app signs in with the admin account; the API token is only for extensions ---------- */
+  let me = null; // { user, mustChange }
+  const authApi = async (method, path, body) => {
+    const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + WebP.token() }, body: body ? JSON.stringify(body) : undefined });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || '服务器错误 ' + r.status);
+    return d;
+  };
   async function ensureAuth() {
-    const h = await fetch('/api/health', { headers: { Authorization: 'Bearer ' + WebP.token() } }).then((r) => r.json()).catch(() => null);
-    if (h && (h.authed || !h.authRequired)) return true;
-    $app.innerHTML = `<div class="login card"><h2>🔐 登录</h2><p class="muted">请输入服务器的 API Token（服务器 .env 中的 API_TOKEN）。</p>
-      <input type="password" id="tok" placeholder="API Token" style="width:100%"><div class="bar" style="margin-top:12px"><button class="btn" id="go">进入</button><span class="muted" id="msg"></span></div></div>`;
+    me = WebP.token() ? await authApi('GET', '/api/auth/me').catch(() => null) : null;
+    if (me && !me.mustChange) return true;
+    if (me) showPasswordForm(); else showLogin();
+    return false;
+  }
+  function showLogin() {
+    $app.innerHTML = `<div class="login card"><h2>🔐 登录</h2>
+      <div class="row"><label>账号</label><input type="text" id="user" autocomplete="username"></div>
+      <div class="row"><label>密码</label><input type="password" id="pass" autocomplete="current-password"></div>
+      <div class="bar" style="margin-top:12px"><button class="btn" id="go">登录</button><span class="muted" id="msg"></span></div></div>`;
     const go = async () => {
-      WebP.setToken(document.getElementById('tok').value.trim());
-      const r = await fetch('/api/health', { headers: { Authorization: 'Bearer ' + WebP.token() } }).then((x) => x.json());
-      if (r.authed) route(); else document.getElementById('msg').textContent = 'Token 不正确';
+      const pass = document.getElementById('pass').value;
+      try {
+        const r = await authApi('POST', '/api/auth/login', { username: document.getElementById('user').value.trim(), password: pass });
+        WebP.setToken(r.token);
+        if (r.mustChange) { me = r; showPasswordForm(pass); } else route();
+      } catch (e) { document.getElementById('msg').textContent = e.message; }
     };
     document.getElementById('go').onclick = go;
-    document.getElementById('tok').onkeydown = (e) => e.key === 'Enter' && go();
-    return false;
+    $app.querySelectorAll('input').forEach((i) => (i.onkeydown = (e) => e.key === 'Enter' && go()));
+    document.getElementById('user').focus();
+  }
+  /** Account form: forced after signing in with the default password, and in settings. `current` skips re-typing it right after login. */
+  function passwordFields(current) {
+    return `<div class="row"><label>账号</label><input type="text" id="nuser" value="${esc(me.user)}" autocomplete="username"></div>
+      ${current ? '' : '<div class="row"><label>当前密码</label><input type="password" id="cur" autocomplete="current-password"></div>'}
+      <div class="row"><label>新密码</label><input type="password" id="np1" autocomplete="new-password" placeholder="至少 6 位"></div>
+      <div class="row"><label>确认新密码</label><input type="password" id="np2" autocomplete="new-password"></div>`;
+  }
+  async function savePassword(current) {
+    const v = (id) => document.getElementById(id).value;
+    if (v('np1') !== v('np2')) throw new Error('两次输入的新密码不一致');
+    const r = await authApi('POST', '/api/auth/password', { username: v('nuser').trim(), current: current || v('cur'), password: v('np1') });
+    me = { user: r.user, mustChange: false };
+  }
+  function showPasswordForm(current) {
+    $app.innerHTML = `<div class="login card"><h2>🔑 修改默认密码</h2>
+      <p class="muted">首次登录请设置新密码，以后用新密码登录；账号名也可以一起改。</p>${passwordFields(current)}
+      <div class="bar" style="margin-top:12px"><button class="btn" id="chg">保存并进入</button><button class="btn gh" id="out">退出登录</button><span class="muted" id="msg"></span></div></div>`;
+    document.getElementById('chg').onclick = async () => {
+      try { await savePassword(current); toast('密码已修改'); route(); } catch (e) { document.getElementById('msg').textContent = e.message; }
+    };
+    document.getElementById('out').onclick = logout;
+  }
+  async function logout() {
+    await authApi('POST', '/api/auth/logout').catch(() => {});
+    localStorage.removeItem('era_token');
+    location.reload();
+  }
+  function copyText(text) { // navigator.clipboard needs HTTPS, and the server usually runs on plain http://IP:8080
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    ta.style.cssText = 'position:fixed;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } finally { ta.remove(); }
+    return Promise.resolve();
   }
 
   /* ---------- words ---------- */
@@ -403,9 +455,16 @@
   async function pageSettings() {
     const s = await api('GET', '/api/settings');
     const voices = await api('GET', '/api/tts/voices');
+    let { token } = await api('GET', '/api/settings/api-token');
     const kv = WebP.ls.get('kokoroVoice', '') || voices.default;
     $app.innerHTML = `<h2>⚙️ 设置</h2>
-      <div class="card"><h3 style="margin-top:0">服务器 AI（上游）</h3>
+      <div class="card"><h3 style="margin-top:0">扩展 / 油猴脚本连接</h3>
+        <div class="muted">在扩展或油猴脚本的“设置 → 服务器”里填这两项（网页端用下面的管理员账号登录，不用 Token）。</div>
+        <div class="row"><label>服务器地址</label><input type="text" id="origin" value="${esc(location.origin)}" readonly><button class="btn gh" id="copyorigin">复制</button></div>
+        <div class="row"><label>API Token</label><input type="password" id="apitok" value="${esc(token)}" readonly><button class="btn gh" id="showtok">显示</button><button class="btn gh" id="copytok">复制</button><button class="btn gh" id="regen">重新生成</button></div>
+        <div class="bar"><button class="btn gh" id="extcfg">生成扩展 / 油猴脚本配置文件</button><span class="muted">导入到扩展或油猴脚本的“设置 → 导入”，自动填好服务器地址与 Token，并使用服务器 AI。</span></div>
+        <div class="muted" id="m2"></div></div>
+      <div class="card" style="margin-top:12px"><h3 style="margin-top:0">服务器 AI（上游）</h3>
         <div class="row"><label>Base URL</label><input type="text" id="base" value="${esc(s.ai_base_url)}" placeholder="https://api.z.ai/api/coding/paas/v4"></div>
         <div class="row"><label>API Key</label><input type="password" id="key" value="${esc(s.ai_api_key)}" placeholder="留空不修改"></div>
         <div class="row"><label>模型</label><input type="text" id="model" value="${esc(s.ai_model)}" list="models"><datalist id="models"></datalist><button class="btn gh" id="pull">从上游拉取模型</button></div>
@@ -413,7 +472,6 @@
         <div class="bar"><button class="btn" id="save">保存</button><button class="btn gh" id="test">测试</button><span class="muted" id="m1"></span></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">配置导入 / 导出</h3>
         <div class="bar"><button class="btn gh" id="exp1">导出服务器 AI 配置（含密钥）</button><button class="btn gh" id="exp0">导出（不含密钥）</button><label class="btn gh">导入<input type="file" id="imp" accept=".json" hidden></label></div>
-        <div class="bar"><button class="btn gh" id="extcfg">生成扩展 / 油猴脚本配置文件</button><span class="muted">导入到扩展或油猴脚本的“设置 → 导入”，自动填好服务器地址与 Token，并使用服务器 AI。</span></div>
         <div class="bar"><a class="btn gh" id="backup" href="#">备份全部数据 (JSON)</a></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">从本服务器安装油猴脚本</h3>
         <div class="muted">jsDelivr 打不开时用这里的地址安装（与 GitHub 上的同一版本）。</div>
@@ -424,7 +482,9 @@
         <div class="muted">状态：${voices.status.ready ? '✅ 已加载' : voices.status.loading ? '⏳ 加载中' : voices.status.enabled ? '首次朗读时加载模型' : '未启用'}${voices.status.error ? ' · 错误：' + esc(voices.status.error) : ''}</div>
         <div class="row"><label>音色</label><select id="voice">${voices.voices.map(([v, n]) => `<option value="${v}" ${kv === v ? 'selected' : ''}>${n}</option>`).join('')}</select><button class="btn gh" id="try">试听</button></div>
         <div class="row"><label>语速</label><input type="text" id="rate" value="${WebP.ls.get('tts', {}).rate || 1}" style="max-width:80px"></div></div>
-      <div class="card" style="margin-top:12px"><h3 style="margin-top:0">账号</h3><button class="btn gh" id="logout">退出（清除本机 Token）</button></div>`;
+      <div class="card" style="margin-top:12px"><h3 style="margin-top:0">管理员账号</h3>
+        <div class="muted">网页端用这个账号登录。改密码后，其他浏览器需要重新登录。</div>${passwordFields()}
+        <div class="bar"><button class="btn" id="chg">修改账号 / 密码</button><button class="btn gh" id="logout">退出登录</button><span class="muted" id="m3"></span></div></div>`;
     const v = (id) => document.getElementById(id).value.trim();
     const m1 = (t) => (document.getElementById('m1').textContent = t);
     const body = () => ({ ai_base_url: v('base'), ai_api_key: v('key'), ai_model: v('model'), ai_extra: v('extra') });
@@ -437,7 +497,7 @@
     document.getElementById('imp').onchange = async (e) => { try { await api('POST', '/api/settings/import', JSON.parse(await e.target.files[0].text())); toast('已导入'); pageSettings(); } catch (err) { toast(err.message); } };
     document.getElementById('extcfg').onclick = () => {
       const c = ERA.defaultConfig();
-      c.server = { ...c.server, enabled: true, baseUrl: location.origin, apiToken: WebP.token() };
+      c.server = { ...c.server, enabled: true, baseUrl: location.origin, apiToken: token };
       c.ai.profiles.push({ ...c.ai.profiles[0], id: 'server', name: '服务器 AI', type: 'server', model: '' });
       c.ai.active = 'server';
       ERA.download('era-config.json', ERA.exportConfig(c), 'application/json');
@@ -447,7 +507,20 @@
     document.getElementById('voice').onchange = (e) => WebP.ls.set('kokoroVoice', e.target.value);
     document.getElementById('rate').onchange = (e) => WebP.ls.set('tts', { ...WebP.ls.get('tts', {}), rate: +e.target.value || 1 });
     document.getElementById('try').onclick = () => { WebP.ls.set('kokoroVoice', v('voice')); ERA.speak('Reading widely is the best way to build vocabulary.').catch((e) => toast(e.message)); };
-    document.getElementById('logout').onclick = () => { localStorage.removeItem('era_token'); location.reload(); };
+    const m2 = (t) => (document.getElementById('m2').textContent = t);
+    const tokInput = document.getElementById('apitok');
+    document.getElementById('copyorigin').onclick = () => copyText(location.origin).then(() => toast('已复制服务器地址'));
+    document.getElementById('showtok').onclick = (e) => { const show = tokInput.type === 'password'; tokInput.type = show ? 'text' : 'password'; e.target.textContent = show ? '隐藏' : '显示'; };
+    document.getElementById('copytok').onclick = () => copyText(token).then(() => toast('已复制 API Token'));
+    document.getElementById('regen').onclick = async () => {
+      if (!confirm('重新生成 API Token？旧 Token 会立即失效，已连接的扩展和油猴脚本要换成新 Token（或重新导入配置文件）。')) return;
+      try { token = (await api('POST', '/api/settings/api-token')).token; tokInput.value = token; m2('已生成新 Token，请更新扩展和油猴脚本里的 Token。'); } catch (e) { m2('✗ ' + e.message); }
+    };
+    document.getElementById('chg').onclick = async () => {
+      const m3 = (t) => (document.getElementById('m3').textContent = t);
+      try { await savePassword(); ['cur', 'np1', 'np2'].forEach((id) => (document.getElementById(id).value = '')); m3('已修改 ✓'); } catch (e) { m3('✗ ' + e.message); }
+    };
+    document.getElementById('logout').onclick = logout;
   }
 
   /* ---------- router ---------- */
@@ -460,6 +533,7 @@
     if (name !== 'reader') { ERA.pageMetaOverride = null; ERA.annotKey = null; }
     try { await (PAGES[name] || pageWords)(); } catch (e) {
       if (/未授权/.test(e.message)) { localStorage.removeItem('era_token'); return route(); }
+      if (/修改默认密码/.test(e.message)) return route();
       $app.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`;
     }
   }

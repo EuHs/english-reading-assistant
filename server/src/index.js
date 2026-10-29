@@ -31,13 +31,41 @@ function settings() {
   };
 }
 const saveSetting = (k, v) => db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, v);
+const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
 const mask = (k) => (k ? k.slice(0, 4) + '****' + k.slice(-4) : '');
+
+/* ---------- web app admin account, and the API token that extensions / userscripts use ---------- */
+const DEFAULT_PASSWORD = '123456';
+const hashPass = (p, salt = crypto.randomBytes(16).toString('hex')) => `scrypt:${salt}:${crypto.scryptSync(String(p), salt, 64).toString('hex')}`;
+const passOk = (p, stored) => {
+  const [, salt, hex] = String(stored || '').split(':');
+  if (!salt || !hex) return false;
+  const a = crypto.scryptSync(String(p), salt, 64), b = Buffer.from(hex, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+};
+if (!getSetting('admin_pass')) { // first start: admin / 123456 unless .env says otherwise; the default must be changed at first login
+  saveSetting('admin_user', env.ADMIN_USER || 'admin');
+  saveSetting('admin_pass', hashPass(env.ADMIN_PASSWORD || DEFAULT_PASSWORD));
+  saveSetting('admin_must_change', env.ADMIN_PASSWORD && env.ADMIN_PASSWORD !== DEFAULT_PASSWORD ? '0' : '1');
+}
+const mustChange = () => getSetting('admin_must_change') === '1';
+// regenerated from the web app it lives in the DB; until then it is API_TOKEN from .env
+const apiToken = () => getSetting('api_token') ?? env.API_TOKEN ?? '';
+const sha = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+const SESSION_DAYS = 30;
+function newSession(user) {
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare("DELETE FROM sessions WHERE expires_at <= datetime('now')").run();
+  db.prepare('INSERT INTO sessions(token_hash, username, expires_at) VALUES(?, ?, datetime(\'now\', ?))').run(sha(token), user, `+${SESSION_DAYS} days`);
+  return token;
+}
+const sessionOk = (t) => !!t && !!db.prepare("SELECT 1 FROM sessions WHERE token_hash=? AND expires_at > datetime('now')").get(sha(t));
 
 const ai = new AIClient(settings);
 const svc = new Service(db, ai);
 const tts = new TTS({ dataDir: DATA, enabled: env.ENABLE_TTS !== '0', dtype: env.KOKORO_DTYPE, hfEndpoint: env.HF_ENDPOINT });
 
-if (!env.API_TOKEN) console.warn('⚠️  API_TOKEN 未设置：API 对所有人开放。请在 .env 中设置 API_TOKEN。');
+if (!apiToken()) console.warn('⚠️  API_TOKEN 未设置：扩展用的 API 对所有人开放。请在 .env 中设置 API_TOKEN，或在网页应用的设置里生成。');
 
 const app = express();
 app.disable('x-powered-by');
@@ -54,17 +82,22 @@ app.use((req, res, next) => {
 });
 
 const tokenOk = (t) => {
-  if (!env.API_TOKEN) return true;
+  const want = apiToken();
+  if (!want) return true;
   if (!t) return false;
-  const a = Buffer.from(String(t)), b = Buffer.from(env.API_TOKEN);
+  const a = Buffer.from(String(t)), b = Buffer.from(want);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 };
+const bearer = (req) => { const h = req.get('authorization') || ''; return h.startsWith('Bearer ') ? h.slice(7) : req.get('x-api-key') || req.query.token; };
+// the web app signs in as the admin (a session token); extensions and userscripts send the API token
+const caller = (req) => { const t = bearer(req); return sessionOk(t) ? 'admin' : tokenOk(t) ? 'token' : null; };
 function auth(req, res, next) {
-  const h = req.get('authorization') || '';
-  const t = h.startsWith('Bearer ') ? h.slice(7) : req.get('x-api-key') || req.query.token;
-  if (tokenOk(t)) return next();
-  res.status(401).json({ error: '未授权：请提供正确的 API Token' });
+  req.caller = caller(req);
+  if (!req.caller) return res.status(401).json({ error: '未授权：请登录，或提供正确的 API Token' });
+  if (req.caller === 'admin' && mustChange()) return res.status(403).json({ error: '请先修改默认密码', mustChange: true });
+  next();
 }
+const adminOnly = (req, res, next) => (req.caller === 'admin' ? next() : res.status(403).json({ error: '需要在网页应用中登录管理员账号' }));
 const wrap = (fn) => async (req, res) => {
   try { const r = await fn(req, res); if (r !== undefined && !res.headersSent) res.json(r); }
   catch (e) { if (!res.headersSent) res.status(e.status || 500).json({ error: e.message }); if (!e.status) console.error(e); }
@@ -72,9 +105,45 @@ const wrap = (fn) => async (req, res) => {
 
 /* ---------- public ---------- */
 app.get('/api/health', (req, res) => {
-  const authed = tokenOk((req.get('authorization') || '').replace(/^Bearer /, '') || req.get('x-api-key'));
-  res.json({ ok: true, name: 'english-reading-assistant', version: VERSION, ai: ai.configured, tts: tts.status(), authRequired: !!env.API_TOKEN, authed, ...(authed ? { words: db.prepare('SELECT COUNT(*) n FROM words').get().n } : {}) });
+  const authed = !!caller(req);
+  res.json({ ok: true, name: 'english-reading-assistant', version: VERSION, ai: ai.configured, tts: tts.status(), authRequired: !!apiToken(), authed, ...(authed ? { words: db.prepare('SELECT COUNT(*) n FROM words').get().n } : {}) });
 });
+
+/* ---------- web app login ---------- */
+const failures = new Map(); // socket address -> { n, until }: 10 wrong passwords lock that address out for 15 minutes
+app.post('/api/auth/login', (req, res) => {
+  const ip = req.socket.remoteAddress || '';
+  const f = failures.get(ip) || { n: 0, until: 0 };
+  if (f.until > Date.now()) return res.status(429).json({ error: '密码错误次数过多，请 15 分钟后再试' });
+  const { username = '', password = '' } = req.body || {};
+  const ok = passOk(password, getSetting('admin_pass')) && String(username).trim() === getSetting('admin_user');
+  if (!ok) {
+    if (failures.size > 5000) failures.clear();
+    failures.set(ip, f.n + 1 >= 10 ? { n: 0, until: Date.now() + 15 * 60e3 } : { n: f.n + 1, until: 0 });
+    return res.status(401).json({ error: '账号或密码不正确' });
+  }
+  failures.delete(ip);
+  res.json({ token: newSession(getSetting('admin_user')), user: getSetting('admin_user'), mustChange: mustChange() });
+});
+const account = express.Router(); // needs the admin session, and stays open while the default password is in use
+account.use((req, res, next) => (sessionOk(bearer(req)) ? next() : res.status(401).json({ error: '未授权：请登录' })));
+account.get('/me', (req, res) => res.json({ user: getSetting('admin_user'), mustChange: mustChange() }));
+account.post('/logout', (req, res) => { db.prepare('DELETE FROM sessions WHERE token_hash=?').run(sha(bearer(req))); res.json({ ok: true }); });
+account.post('/password', wrap((req) => {
+  const { current = '', password = '', username } = req.body || {};
+  const user = String(username ?? getSetting('admin_user')).trim();
+  const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
+  if (!passOk(current, getSetting('admin_pass'))) throw bad('当前密码不正确');
+  if (!user) throw bad('账号不能为空');
+  if (String(password).length < 6) throw bad('新密码至少 6 位');
+  if (password === DEFAULT_PASSWORD || password === current) throw bad('请换一个新密码（不能是默认密码或当前密码）');
+  saveSetting('admin_user', user);
+  saveSetting('admin_pass', hashPass(password));
+  saveSetting('admin_must_change', '0');
+  db.prepare('DELETE FROM sessions WHERE token_hash<>?').run(sha(bearer(req))); // other browsers sign in again
+  return { ok: true, user };
+}));
+app.use('/api/auth', account);
 
 const api = express.Router();
 api.use(auth);
@@ -128,9 +197,13 @@ api.post('/ai/chat', wrap(async (req) => {
 }));
 api.get('/ai/models', wrap(async () => ({ models: await ai.models() })));
 
-/* server settings (AI upstream), import / export */
-api.get('/settings', wrap(() => { const s = settings(); return { ...s, ai_api_key: mask(s.ai_api_key), categories: CATEGORIES, voices: VOICES }; }));
-api.put('/settings', wrap((req) => {
+/* the API token extensions and userscripts connect with: shown and regenerated in the web app's settings */
+api.get('/settings/api-token', adminOnly, wrap(() => ({ token: apiToken() })));
+api.post('/settings/api-token', adminOnly, wrap(() => { const t = crypto.randomBytes(24).toString('hex'); saveSetting('api_token', t); return { token: t }; }));
+
+/* server settings (AI upstream), import / export: admin only, they hold the AI key */
+api.get('/settings', adminOnly, wrap(() => { const s = settings(); return { ...s, ai_api_key: mask(s.ai_api_key), categories: CATEGORIES, voices: VOICES }; }));
+api.put('/settings', adminOnly, wrap((req) => {
   for (const k of [...AI_KEYS, 'tts_voice']) {
     const v = req.body[k];
     if (typeof v !== 'string') continue;
@@ -141,12 +214,12 @@ api.put('/settings', wrap((req) => {
   const s = settings();
   return { ...s, ai_api_key: mask(s.ai_api_key) };
 }));
-api.get('/settings/export', wrap((req) => {
+api.get('/settings/export', adminOnly, wrap((req) => {
   const s = settings();
   const withKey = req.query.secrets === '1';
   return { type: 'era-server-config', version: 1, exportedAt: new Date().toISOString(), ai: { base_url: s.ai_base_url, api_key: withKey ? s.ai_api_key : '', model: s.ai_model, extra: s.ai_extra }, tts: { voice: s.tts_voice } };
 }));
-api.post('/settings/import', wrap((req) => {
+api.post('/settings/import', adminOnly, wrap((req) => {
   const d = req.body || {};
   if (d.type !== 'era-server-config') throw Object.assign(new Error('不是服务器配置文件'), { status: 400 });
   if (d.ai) {
@@ -158,7 +231,7 @@ api.post('/settings/import', wrap((req) => {
   if (d.tts && d.tts.voice) saveSetting('tts_voice', d.tts.voice);
   return { ok: true };
 }));
-api.get('/export', wrap((req, res) => { res.setHeader('Content-Disposition', 'attachment; filename="era-backup.json"'); return svc.exportAll(); }));
+api.get('/export', adminOnly, wrap((req, res) => { res.setHeader('Content-Disposition', 'attachment; filename="era-backup.json"'); return svc.exportAll(); }));
 
 /* Kokoro TTS */
 api.get('/tts/voices', wrap(() => ({ voices: VOICES, status: tts.status(), default: settings().tts_voice })));

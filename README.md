@@ -38,7 +38,7 @@
 
 **服务器 + 网页应用**
 
-- REST API：前端（扩展 / 脚本 / 网页）通过 Token 读写
+- REST API：扩展 / 油猴脚本用 API Token 读写；网页应用用管理员账号登录（默认 `admin` / `123456`，首次登录必须改密码）
 - SQLite 存储生词本与好词好句；**同一个单词可对应多篇文章**；**不同时态/复数的同一个词合并为一条**（ran / running → run，按 ECDICT 词形表 + AI 原形）
 - 生词按文章类别归类：医学、时政、金融、科学、工业、娱乐、信息技术、法律、生物学、人工智能（AI 判断，失败时关键词兜底，可手动改）
 - 生词按**词根**归类（前缀 / 词根 / 后缀，带含义与来源语言）
@@ -141,13 +141,15 @@ cd ~/era-src && sudo env PORT=8080 AI_API_KEY=你的key bash deploy/install.sh
 超过 20 分钟（`NPM_TIMEOUT`，秒）会停止 npm 及其安装脚本，改为不装可选的 Kokoro 朗读依赖，服务器照常可用，网页朗读改用浏览器语音；按 Ctrl+C 也会把它们一起停掉。
 v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `npm packages`），在 x86 服务器上会卡住（原因见上方 `ONNXRUNTIME_NODE_INSTALL_CUDA`）：按 Ctrl+C 结束，`git pull` 后重新运行即可，不用清理。
 
-部署完成后在扩展/脚本“设置 → 服务器”填写 `http://<IP>:8080` 与 API Token 并启用；或在网页应用“设置 → 生成扩展/油猴脚本配置文件”，再到扩展里导入。
+部署完成后用浏览器打开 `http://<IP>:8080`，用 `admin` / `123456` 登录，按提示设置新密码（账号名也可以改；之后在“设置 → 管理员账号”里修改）。
+扩展 / 油猴脚本不用账号密码，而是用 API Token：网页应用“设置 → 扩展 / 油猴脚本连接”里可以查看、复制、重新生成 Token，把服务器地址和 Token 填到扩展/脚本的“设置 → 服务器”并启用；或在同一处生成配置文件，再到扩展里导入。重新生成后旧 Token 立即失效。
 
 ### 环境变量
 
 | 变量 | 说明 |
 |---|---|
-| `API_TOKEN` | 必填。请求头 `Authorization: Bearer <token>` |
+| `API_TOKEN` | 扩展 / 脚本的初始 Token，请求头 `Authorization: Bearer <token>`；在网页设置里重新生成后以数据库中的为准 |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | 网页管理员的初始账号密码，仅首次启动时写入；默认 `admin` / `123456`，用默认密码登录后必须先改密码 |
 | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` | 上游 OpenAI 兼容接口，例如 Z.AI `https://api.z.ai/api/coding/paas/v4`；模型可在网页设置里从上游拉取 |
 | `AI_EXTRA` | 合并进每次请求的 JSON，如 Z.AI 关闭思考加速：`{"thinking":{"type":"disabled"}}` |
 | `ENABLE_TTS` / `KOKORO_DTYPE` / `TTS_VOICE` | Kokoro 朗读；`q8` 模型约 90 MB |
@@ -156,11 +158,15 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 
 ### API
 
-所有 `/api/*`（除 `/api/health`）需 Token。
+除 `/api/health` 和 `/api/auth/login` 外，所有 `/api/*` 需要 `Authorization: Bearer <API Token>`（扩展 / 脚本）或登录后的会话 Token（网页应用）。服务器设置、配置导入导出、数据备份和 API Token 只对网页上登录的管理员开放；仍在用默认密码时，管理员会话只能改密码。同一地址 10 次密码错误后锁定 15 分钟。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/health` | 状态 |
+| POST | `/api/auth/login` | `{username, password}` → `{token, user, mustChange}`，会话 30 天 |
+| GET / POST | `/api/auth/me`，`/api/auth/logout` | 当前账号 / 退出登录 |
+| POST | `/api/auth/password` | `{current, password, username?}` 改密码（及账号名），其他会话随之失效 |
+| GET / POST | `/api/settings/api-token` | 查看 / 重新生成扩展用的 API Token（管理员） |
 | POST | `/api/words` | 加入生词（见下方字段）；按原形去重，追加出处 |
 | POST | `/api/words/batch` | `{items:[...]}` 批量 |
 | DELETE | `/api/words?lemma=&article_url=` | 取消生词：带 `article_url` 只删本文出处，无出处时删整条 |
@@ -180,10 +186,10 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 | GET | `/api/stats` | 统计（总体 / 类别 / 词 / 题型 / 词根 / 每日） |
 | POST | `/api/ai/chat` | `{messages}` AI 代理（扩展“服务器 AI”模式） |
 | GET | `/api/ai/models` | 从上游拉取模型列表 |
-| GET / PUT | `/api/settings`，GET `/api/settings/export`，POST `/api/settings/import` | 服务器 AI 配置及导入导出 |
+| GET / PUT | `/api/settings`，GET `/api/settings/export`，POST `/api/settings/import` | 服务器 AI 配置及导入导出（管理员） |
 | GET | `/api/tts?text=&voice=&speed=` | Kokoro 朗读（WAV） |
 | GET | `/api/fetch?url=` | 抓取网页 / PDF（网页阅读器用） |
-| GET | `/api/export` | 全量数据备份 |
+| GET | `/api/export` | 全量数据备份（管理员） |
 
 `POST /api/words` 字段：
 

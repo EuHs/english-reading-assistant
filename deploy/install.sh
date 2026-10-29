@@ -139,8 +139,16 @@ for i in $(seq 30); do
   sleep 1
 done
 echo
+# the admin account and the API token can both be changed in the web app, so read them from the database
+read -r user must tok <<<"$(cd "$APP" && node --no-warnings -e "
+  const db = new (require('node:sqlite').DatabaseSync)('data/era.db');
+  const get = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
+  console.log(get('admin_user') || 'admin', get('admin_must_change') || '1', get('api_token') || '-')" 2>/dev/null || echo 'admin 1 -')"
+[ "$tok" != - ] || tok=$(grep ^API_TOKEN= "$APP/.env" | cut -d= -f2)
 echo "✅ Installed. Web app: http://<server-ip>:${PORT}/"
+if [ "$must" = 1 ]; then echo "   Web login: $user / 123456 (you set a new password at first login)"
+else echo "   Web login: $user and the password you set (设置 → 管理员账号)"; fi
+echo "   API token for the extension / userscripts: $tok (also in 设置 → 扩展 / 油猴脚本连接)"
 echo "   iPhone/iPad userscript: http://<server-ip>:${PORT}/userscript/english-reading-assistant.ios.user.js"
-echo "   API token: $(grep ^API_TOKEN= "$APP/.env" | cut -d= -f2)"
 echo "   Logs:      journalctl -u era -f"
 echo "   Cloud firewall / security group: allow inbound TCP ${PORT}."

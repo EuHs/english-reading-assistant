@@ -40,6 +40,7 @@ export function openDb(file) {
     word_id INTEGER PRIMARY KEY REFERENCES words(id) ON DELETE CASCADE, wrong_count INTEGER DEFAULT 0, right_streak INTEGER DEFAULT 0,
     last_wrong_at TEXT, mastered INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+  CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, username TEXT, created_at TEXT DEFAULT (datetime('now')), expires_at TEXT);
   CREATE INDEX IF NOT EXISTS idx_occ_word ON occurrences(word_id);
   CREATE INDEX IF NOT EXISTS idx_occ_article ON occurrences(article_id);
   CREATE INDEX IF NOT EXISTS idx_qq_quiz ON quiz_questions(quiz_id);
