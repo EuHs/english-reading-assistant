@@ -95,16 +95,18 @@ ERA.Store = {
     return this.enqueue('unphrase', { text, article_url: url });
   },
 
+  /** Record a change for the server. Pushed at once with 自动同步, otherwise on 立即同步; while the server is off
+   * nothing is recorded (立即同步 uploads the whole local book later). */
   async enqueue(kind, payload) {
     const cfg = await ERA.P.getConfig();
-    if (!cfg.server.enabled || !cfg.server.autoSync) return { synced: false, reason: 'server-disabled' };
+    if (!cfg.server.enabled) return { synced: false, reason: 'server-disabled' };
     let q = (await ERA.P.getData('syncQueue', [])) || [];
     // a cancel makes a still-pending add for the same item pointless
     if (kind === 'unword') q = q.filter((i) => !(i.kind === 'word' && (i.payload.lemma || i.payload.word || '').toLowerCase() === payload.lemma && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     if (kind === 'unphrase') q = q.filter((i) => !(i.kind === 'phrase' && this.normPhrase(i.payload.text) === this.normPhrase(payload.text) && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     q.push({ id: ERA.uid(), kind, payload });
     await ERA.P.setData('syncQueue', q);
-    return this.flush(cfg);
+    return cfg.server.autoSync ? this.flush(cfg) : { synced: false, reason: 'manual', pending: q.length };
   },
 
   /** Push queued items to the server; keeps failures for the next attempt. */
@@ -127,6 +129,50 @@ ERA.Store = {
     }
     await ERA.P.setData('syncQueue', left);
     return { synced: left.length === 0, ok, pending: left.length, error: lastErr };
+  },
+
+  /** 立即同步: send pending changes (cancels first), then the whole local book — also what was saved before the
+   * server was set up. The server merges by lemma and sentence, so nothing is duplicated. */
+  async syncAll() {
+    const cfg = await ERA.P.getConfig();
+    if (!cfg.server.enabled || !cfg.server.baseUrl) return { synced: false, reason: 'server-disabled' };
+    const queued = await this.flush(cfg);
+    const r = { queued: queued.ok, pending: queued.pending, words: 0, newWords: 0, phrases: 0, failed: 0, error: queued.error || '' };
+    const items = [];
+    for (const e of await this.words()) {
+      const base = { word: e.word || e.lemma, lemma: e.lemma, phonetic: e.phonetic, translation: e.translation, meaning: e.meaning, pos: e.pos,
+        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology };
+      for (const o of e.occurrences && e.occurrences.length ? e.occurrences : [{}]) {
+        items.push({ ...base, word: o.surface || base.word, sentence: o.sentence, sentence_translation: o.sentence_translation, article: o.article });
+      }
+    }
+    const done = new Set();
+    for (let i = 0; i < items.length; i += 50) {
+      const chunk = items.slice(i, i + 50);
+      try {
+        const res = await ERA.serverCall('POST', cfg.server.endpoints.words + '/batch', { items: chunk }, cfg);
+        (res || []).forEach((x, j) => {
+          if (!x || x.error) { r.failed++; r.error = (x && x.error) || r.error; return; }
+          done.add(chunk[j].lemma);
+          if (x.created) r.newWords++;
+        });
+      } catch (err) { r.failed += chunk.length; r.error = err.message; }
+    }
+    r.words = done.size;
+    for (const ph of await this.phrases()) {
+      const { id, created, ...payload } = ph;
+      try { await ERA.serverCall('POST', cfg.server.endpoints.phrases, payload, cfg); r.phrases++; } catch (err) { r.failed++; r.error = err.message; }
+    }
+    r.synced = !r.failed && !r.pending;
+    return r;
+  },
+
+  /** One line for any of the sync buttons. */
+  syncMessage(r) {
+    if (r.reason === 'server-disabled') return '请先在设置里启用服务器并填写地址';
+    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待同步的修改` : '');
+    if (r.synced) return `✓ 已同步${what}。服务器上已有的会合并，不会重复`;
+    return `⚠ ${r.failed + r.pending} 项没有同步成功（${r.error}）；已同步${what}`;
   },
 
   async exportAll() {

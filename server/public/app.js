@@ -473,7 +473,13 @@
         <div class="row"><label>Base URL</label><input type="text" id="base" value="${esc(s.ai_base_url)}" placeholder="https://api.z.ai/api/coding/paas/v4"></div>
         <div class="row"><label>API Key</label><input type="password" id="key" value="${esc(s.ai_api_key)}" placeholder="留空不修改"></div>
         <div class="row"><label>模型</label><input type="text" id="model" value="${esc(s.ai_model)}" list="models"><datalist id="models"></datalist><button class="btn gh" id="pull">从上游拉取模型</button></div>
-        <div class="row"><label>附加参数 JSON</label><input type="text" id="extra" value="${esc(s.ai_extra)}" placeholder='如 {"thinking":{"type":"disabled"}}'></div>
+        <div class="muted">下面的参数留空 = 不发送，用模型默认；服务器会按供应商的写法发送，模型报错时自动调整后重试。</div>
+        <div class="row"><label>温度 / top_p</label><input type="text" id="temp" value="${esc(s.ai_temperature)}" placeholder="默认"><input type="text" id="topp" value="${esc(s.ai_top_p)}" placeholder="默认"></div>
+        <div class="row"><label>最大输出 tokens</label><input type="text" id="maxtok" value="${esc(s.ai_max_tokens)}" placeholder="默认"></div>
+        <div class="row"><label>思考强度</label><input type="text" id="effort" value="${esc(s.ai_reasoning)}" list="efforts" placeholder="默认（不发送）"><datalist id="efforts"></datalist>
+          <select id="rfmt">${Object.entries(ERA.REASONING_FORMATS).map(([k, l]) => `<option value="${k}" ${(s.ai_reasoning_format || 'auto') === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+        <div class="row"><label>自定义参数 JSON</label><input type="text" id="extra" value="${esc(s.ai_extra)}" placeholder='合并进每次请求，可覆盖上面各项，如 {"top_k":40}'></div>
+        <div class="muted" id="minfo"></div>
         <div class="bar"><button class="btn" id="save">保存</button><button class="btn gh" id="test">测试</button><span class="muted" id="m1"></span></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">配置导入 / 导出</h3>
         <div class="bar"><button class="btn gh" id="exp1">导出服务器 AI 配置（含密钥）</button><button class="btn gh" id="exp0">导出（不含密钥）</button><label class="btn gh">导入<input type="file" id="imp" accept=".json" hidden></label></div>
@@ -492,10 +498,40 @@
         <div class="bar"><button class="btn" id="chg">修改账号 / 密码</button><button class="btn gh" id="logout">退出登录</button><span class="muted" id="m3"></span></div></div>`;
     const v = (id) => document.getElementById(id).value.trim();
     const m1 = (t) => (document.getElementById('m1').textContent = t);
-    const body = () => ({ ai_base_url: v('base'), ai_api_key: v('key'), ai_model: v('model'), ai_extra: v('extra') });
+    // parameter information the provider gave per model on the last pull (OpenRouter-style /models)
+    const models = {};
+    try { const mi = s.ai_model_info && JSON.parse(s.ai_model_info); if (mi && mi.id) models[mi.id] = mi; } catch (e) { /* ignore */ }
+    const showInfo = () => {
+      const meta = models[v('model')] || null;
+      const efforts = meta && meta.efforts ? [...(meta.mandatory ? [] : ['off']), ...meta.efforts] : ['off', ...ERA.EFFORTS.slice(1)];
+      document.getElementById('efforts').innerHTML = efforts.map((e) => `<option value="${esc(e)}">${e === 'off' ? '关闭思考' : ''}</option>`).join('');
+      let t = meta ? ERA.describeModel(meta) : '「从上游拉取模型」后，供应商若提供这个模型的参数信息（如 OpenRouter）会显示在这里；多数供应商只给模型名。不确定时点「测试」，模型报错会自动调整参数。';
+      if (meta && meta.mandatory && /^(off|none)$/i.test(v('effort'))) t = '⚠ 这个模型不能关闭思考，会自动改用最低一档。' + t;
+      let keys = [];
+      try { keys = Object.keys(ERA.parseExtra(v('extra'))).filter((k) => ERA.REASONING_KEYS.includes(k)); } catch (e) { /* shown on save */ }
+      if (keys.length) t = `⚠ 自定义参数 JSON 里的 ${keys.join('、')} 会覆盖「思考强度」。` + t;
+      document.getElementById('minfo').textContent = t;
+    };
+    showInfo();
+    document.getElementById('model').addEventListener('input', showInfo);
+    document.getElementById('effort').addEventListener('input', showInfo);
+    document.getElementById('extra').addEventListener('input', showInfo);
+    // after 测试: put what the provider required into the form, so 保存 keeps it
+    const FIELD = { temperature: 'temp', top_p: 'topp', max_tokens: 'maxtok', reasoning_effort: 'effort', thinking: 'effort', reasoning: 'effort', enable_thinking: 'effort', thinking_budget: 'effort' };
+    const applyNotes = (notes) => {
+      for (const { fix } of notes) {
+        (fix.drop || []).forEach((k) => FIELD[k] && (document.getElementById(FIELD[k]).value = ''));
+        if (fix.effort) document.getElementById('effort').value = fix.effort;
+      }
+      showInfo();
+    };
+    const body = () => ({
+      ai_base_url: v('base'), ai_api_key: v('key'), ai_model: v('model'), ai_extra: v('extra'), ai_temperature: v('temp'), ai_top_p: v('topp'),
+      ai_max_tokens: v('maxtok'), ai_reasoning: v('effort'), ai_reasoning_format: v('rfmt'), ai_model_info: models[v('model')] ? JSON.stringify(models[v('model')]) : '',
+    });
     document.getElementById('save').onclick = async () => { try { await api('PUT', '/api/settings', body()); m1('已保存 ✓'); } catch (e) { m1('✗ ' + e.message); } };
-    document.getElementById('pull').onclick = async () => { m1('拉取中…'); try { await api('PUT', '/api/settings', body()); const r = await api('GET', '/api/ai/models'); document.getElementById('models').innerHTML = r.models.map((x) => `<option value="${esc(x)}">`).join(''); m1(`共 ${r.models.length} 个：${r.models.slice(0, 8).join(', ')}${r.models.length > 8 ? '…' : ''}`); } catch (e) { m1('✗ ' + e.message); } };
-    document.getElementById('test').onclick = async () => { m1('测试中…'); const t0 = Date.now(); try { await api('PUT', '/api/settings', body()); const r = await api('POST', '/api/ai/chat', { messages: [{ role: 'user', content: 'Reply with: OK' }] }); m1(`✓ ${r.content.slice(0, 30)} (${Date.now() - t0}ms)`); } catch (e) { m1('✗ ' + e.message); } };
+    document.getElementById('pull').onclick = async () => { m1('拉取中…'); try { await api('PUT', '/api/settings', body()); const r = await api('GET', '/api/ai/models'); Object.assign(models, r.info || {}); document.getElementById('models').innerHTML = r.models.map((x) => `<option value="${esc(x)}">`).join(''); showInfo(); const n = Object.keys(r.info || {}).length; m1(`共 ${r.models.length} 个${n ? `（${n} 个带参数信息）` : '（供应商没有提供参数信息）'}：${r.models.slice(0, 8).join(', ')}${r.models.length > 8 ? '…' : ''}`); } catch (e) { m1('✗ ' + e.message); } };
+    document.getElementById('test').onclick = async () => { m1('测试中…'); const t0 = Date.now(); try { await api('PUT', '/api/settings', body()); const r = await api('POST', '/api/ai/chat', { messages: [{ role: 'user', content: 'Reply with: OK' }], fresh: true }); const notes = r.notes || []; if (notes.length) applyNotes(notes); m1(`✓ ${r.content.slice(0, 30)} (${Date.now() - t0}ms)` + (notes.length ? ` · 已按模型要求调整：${notes.map((x) => x.text).join('；')}。上面的参数已改好，点「保存」生效` : '')); } catch (e) { m1('✗ ' + e.message); } };
     const dl = async (secrets) => ERA.download(secrets ? 'era-server-config.json' : 'era-server-config-public.json', JSON.stringify(await api('GET', '/api/settings/export?secrets=' + (secrets ? 1 : 0)), null, 2), 'application/json');
     document.getElementById('exp1').onclick = () => dl(true);
     document.getElementById('exp0').onclick = () => dl(false);

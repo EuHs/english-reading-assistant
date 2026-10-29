@@ -247,7 +247,7 @@ const MENU = [
   ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
   ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
   ['📥 下载离线词典', downloadDictNow],
-  ['🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); }],
+  ['🔄 同步到服务器', async () => { ERA.UI.toast('同步中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
 ];
 const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');
 

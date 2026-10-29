@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.4.0
+// @version      1.6.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -29,7 +29,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.4.0';
+ERA.VERSION = '1.6.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -73,7 +73,14 @@ ERA.defaultConfig = function () {
           baseUrl: 'https://api.openai.com/v1',
           apiKey: '',
           model: 'gpt-4o-mini',
+          // request parameters: '' leaves a parameter out, so the model's own default applies
           temperature: 0.2,
+          topP: '',
+          maxTokens: '',
+          reasoning: '', // thinking level: off / minimal / low / medium / high / xhigh / max, or a value the provider names
+          reasoningFormat: 'auto', // how the provider expects it, see ERA.REASONING_FORMATS
+          extra: '', // JSON merged last into every request
+          modelInfo: null, // parameter information the provider's /models gave for this model
           timeout: 60,
           headers: {},
           relay: {
@@ -333,27 +340,210 @@ ERA.parseJSONLoose = function (text) {
   throw new Error('AI 返回不是 JSON：' + t.slice(0, 120));
 };
 
-/** Build {url, headers, body} for a profile. Pure function (testable). */
-ERA.buildAIRequest = function (profile, messages, opts) {
-  const body = { model: profile.model, messages, temperature: profile.temperature ?? 0.2, stream: false };
-  if (opts && opts.maxTokens) body.max_tokens = opts.maxTokens;
-  const base = String(profile.baseUrl || '').replace(/\/+$/, '');
-  let url = base + '/chat/completions';
-  const headers = { 'Content-Type': 'application/json', ...(profile.headers || {}) };
-  if (profile.apiKey) headers.Authorization = 'Bearer ' + profile.apiKey;
-  if (profile.type === 'relay') {
-    const r = profile.relay || {};
-    const relayBase = String(r.url || '').replace(/\/+$/, '');
-    if (r.mode === 'forward') {
-      url = relayBase;
-      headers[r.targetHeader || 'X-Target-URL'] = base + '/chat/completions';
-      if (r.relayKey) headers['X-Relay-Key'] = r.relayKey;
-    } else {
-      url = relayBase + '/chat/completions';
-      if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey;
+/* ---------- request parameters: one generic set, written the way each provider expects ---------- */
+(function () {
+  const QWEN_BUDGET = { minimal: 256, low: 1024, medium: 4096, high: 16384 };
+  const REASONING_KEYS = ['reasoning_effort', 'thinking', 'reasoning', 'enable_thinking', 'thinking_budget'];
+  const num = (v) => (v === '' || v == null || isNaN(+v) ? undefined : +v);
+  const omit = (o, keys) => Object.fromEntries(Object.entries(o).filter(([k]) => !keys.includes(k)));
+
+  ERA.REASONING_FORMATS = {
+    auto: '自动（按接口地址和模型判断）',
+    effort: 'reasoning_effort（OpenAI 标准：OpenAI、Gemini、Groq、xAI、Ollama…）',
+    zhipu: 'thinking + reasoning_effort（智谱 GLM：Z.AI / BigModel）',
+    thinking: 'thinking 开关（豆包等，只分开 / 关）',
+    qwen: 'enable_thinking（通义千问 DashScope、硅基流动）',
+    openrouter: 'reasoning 对象（OpenRouter）',
+    none: '不发送思考参数',
+  };
+  ERA.EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']; // lowest first
+  ERA.REASONING_KEYS = REASONING_KEYS;
+
+  ERA.detectReasoningFormat = function (baseUrl, model) {
+    const u = String(baseUrl || '').toLowerCase(), m = String(model || '').toLowerCase();
+    if (/openrouter\.ai/.test(u)) return 'openrouter';
+    if (/bigmodel\.cn|\bz\.ai\b/.test(u) || /^glm-/.test(m)) return 'zhipu';
+    if (/dashscope|aliyuncs\.com|siliconflow/.test(u) || /^(qwen|qwq)/.test(m)) return 'qwen';
+    if (/volces\.com|volcengine/.test(u) || /doubao/.test(m)) return 'thinking';
+    return 'effort';
+  };
+
+  /** Body fields asking for thinking `level` (off / minimal … max, or any value the provider names) in `format`; '' sends nothing. */
+  ERA.reasoningFields = function (format, level) {
+    level = String(level || '').trim().toLowerCase();
+    if (!level || format === 'none') return {};
+    const off = /^(off|none|disabled?|false)$/.test(level);
+    switch (format) {
+      case 'zhipu': return off ? { thinking: { type: 'disabled' } } : { thinking: { type: 'enabled' }, reasoning_effort: level };
+      case 'thinking': return { thinking: { type: off ? 'disabled' : 'enabled' } };
+      case 'qwen': return off ? { enable_thinking: false } : { enable_thinking: true, ...(QWEN_BUDGET[level] ? { thinking_budget: QWEN_BUDGET[level] } : {}) };
+      case 'openrouter': return { reasoning: off ? { enabled: false } : { effort: level } };
+      default: return { reasoning_effort: off ? 'none' : level };
     }
-  }
-  return { url, headers, body };
+  };
+
+  /** The custom-parameters JSON (object or text) merged last into every request. */
+  ERA.parseExtra = function (x) {
+    if (!x) return {};
+    if (typeof x === 'object') return x;
+    let o;
+    try { o = JSON.parse(x); } catch (e) { throw new Error('自定义参数不是合法 JSON'); }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw new Error('自定义参数应为 JSON 对象，如 {"top_k":40}');
+    return o;
+  };
+
+  /** Build {url, headers, body} for a profile. Pure function (testable). */
+  ERA.buildAIRequest = function (profile, messages, opts) {
+    const body = { model: profile.model, messages, stream: false };
+    const temperature = num(profile.temperature), topP = num(profile.topP), maxTokens = num((opts && opts.maxTokens) || profile.maxTokens);
+    if (temperature !== undefined) body.temperature = temperature;
+    if (topP !== undefined) body.top_p = topP;
+    if (maxTokens) body.max_tokens = maxTokens;
+    const format = !profile.reasoningFormat || profile.reasoningFormat === 'auto' ? ERA.detectReasoningFormat(profile.baseUrl, profile.model) : profile.reasoningFormat;
+    Object.assign(body, ERA.reasoningFields(format, profile.reasoning));
+    // the provider listed this model's parameters (OpenRouter-style): leave out the sampling ones it doesn't take
+    const info = profile.modelInfo;
+    if (info && info.id === profile.model && Array.isArray(info.params) && info.params.length) {
+      for (const k of ['temperature', 'top_p', 'max_tokens']) if (k in body && !info.params.includes(k)) delete body[k];
+    }
+    Object.assign(body, ERA.parseExtra(profile.extra));
+    const base = String(profile.baseUrl || '').replace(/\/+$/, '');
+    let url = base + '/chat/completions';
+    const headers = { 'Content-Type': 'application/json', ...(profile.headers || {}) };
+    if (profile.apiKey) headers.Authorization = 'Bearer ' + profile.apiKey;
+    if (profile.type === 'relay') {
+      const r = profile.relay || {};
+      const relayBase = String(r.url || '').replace(/\/+$/, '');
+      if (r.mode === 'forward') {
+        url = relayBase;
+        headers[r.targetHeader || 'X-Target-URL'] = base + '/chat/completions';
+        if (r.relayKey) headers['X-Relay-Key'] = r.relayKey;
+      } else {
+        url = relayBase + '/chat/completions';
+        if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey;
+      }
+    }
+    return { url, headers, body };
+  };
+
+  /* Providers disagree on parameters, and most only say so in a 400 error ("This model always engages in
+   * thinking and cannot be disabled; please use low, high, or max"). Adapt the request to that error and retry. */
+  // thinking switched off wins over a level sent alongside it (e.g. custom JSON disabling what the level enables)
+  const effortOf = (b) => ((b.thinking && b.thinking.type === 'disabled') || b.enable_thinking === false || (b.reasoning && b.reasoning.enabled === false) ? 'none'
+    : b.reasoning_effort || (b.reasoning && b.reasoning.effort) || '');
+  const withEffort = (b, level) => {
+    const n = { ...b };
+    if (n.reasoning && typeof n.reasoning === 'object') n.reasoning = { effort: level };
+    else {
+      n.reasoning_effort = level;
+      if (n.thinking) n.thinking = { ...n.thinking, type: 'enabled' };
+      if ('enable_thinking' in n) n.enable_thinking = true;
+    }
+    return n;
+  };
+  const rank = (e) => ERA.EFFORTS.indexOf(e);
+
+  /** Thinking levels a provider's error names, minus the one that was sent; lowest first. */
+  ERA.allowedEfforts = function (message, sent) {
+    const words = String(message).toLowerCase().match(/[a-z]+/g) || [];
+    return [...new Set(words.filter((w) => rank(w) >= 0 && w !== sent))].sort((a, b) => rank(a) - rank(b));
+  };
+
+  /** A changed request body for a 400 that names a parameter, as { body, fix, text }; null when it names none. */
+  ERA.adaptToError = function (body, errText) {
+    const msg = String(errText || ''), low = msg.toLowerCase();
+    const sent = Object.keys(body).filter((k) => !['model', 'messages', 'stream'].includes(k));
+    const reasoning = sent.filter((k) => REASONING_KEYS.includes(k));
+    if (reasoning.length && /think|reason|effort/.test(low)) {
+      const cur = effortOf(body);
+      const allowed = ERA.allowedEfforts(msg, cur);
+      if (allowed.length) {
+        const want = rank(cur || 'medium');
+        const level = allowed.reduce((best, a) => (Math.abs(rank(a) - want) < Math.abs(rank(best) - want) ? a : best));
+        return { body: withEffort(body, level), fix: { effort: level }, text: `模型只接受思考强度 ${allowed.join(' / ')}，已改用 ${level}` };
+      }
+      return { body: omit(body, reasoning), fix: { drop: reasoning }, text: '模型不接受这个思考参数，已去掉（用模型默认）' };
+    }
+    const named = sent.filter((k) => low.includes(k.toLowerCase()));
+    if (named.length) return { body: omit(body, named), fix: { drop: named }, text: `模型不支持参数 ${named.join('、')}，已去掉` };
+    return null;
+  };
+
+  const learned = new Map(); // request settings -> the fix that made the provider accept them
+  const applyFix = (b, fix) => {
+    const n = fix.drop && fix.drop.length ? omit(b, fix.drop) : b;
+    return fix.effort ? withEffort(n, fix.effort) : n;
+  };
+  /** POST `body` with `send(body) -> {ok, status, text}`, adapting to at most two 400s; a fix is remembered
+   * for the same settings so later calls don't fail first (`fresh` ignores it: a settings test should show
+   * what the provider requires). Returns { res, notes: [{ text, fix }] }. */
+  ERA.aiSend = async function (send, body, { fresh = false } = {}) {
+    const key = JSON.stringify(omit(body, ['messages']));
+    if (!fresh && learned.has(key)) body = applyFix(body, learned.get(key));
+    const notes = [];
+    for (let i = 0; ; i++) {
+      const res = await send(body);
+      if (res.ok || res.status !== 400 || i === 2) return { res, notes };
+      const a = ERA.adaptToError(body, res.text);
+      if (!a) return { res, notes };
+      body = a.body;
+      notes.push({ text: a.text, fix: a.fix });
+      const prev = learned.get(key) || {};
+      learned.set(key, { drop: [...new Set([...(prev.drop || []), ...(a.fix.drop || [])])], effort: a.fix.effort || prev.effort });
+    }
+  };
+
+  /* ---------- what a provider's /models says about each model (OpenRouter lists parameters; most list ids only) ---------- */
+  ERA.modelMeta = function (m) {
+    if (!m || typeof m !== 'object') return null;
+    const r = m.reasoning && typeof m.reasoning === 'object' ? m.reasoning : {};
+    const tp = m.top_provider || {};
+    const defaults = m.default_parameters && typeof m.default_parameters === 'object'
+      ? Object.fromEntries(Object.entries(m.default_parameters).filter(([, v]) => v != null)) : null;
+    const meta = {
+      id: m.id || m.name,
+      params: Array.isArray(m.supported_parameters) ? m.supported_parameters : null,
+      efforts: Array.isArray(r.supported_efforts) ? r.supported_efforts.slice().sort((a, b) => rank(a) - rank(b)) : null,
+      defaultEffort: r.default_effort || null,
+      mandatory: typeof r.mandatory === 'boolean' ? r.mandatory : null,
+      defaults: defaults && Object.keys(defaults).length ? defaults : null,
+      maxOutput: tp.max_completion_tokens || m.max_completion_tokens || m.max_output_tokens || m.outputTokenLimit || null,
+      context: m.context_length || tp.context_length || m.max_model_len || m.inputTokenLimit || null,
+      capabilities: Array.isArray(m.capabilities) ? m.capabilities : null,
+    };
+    return Object.entries(meta).some(([k, v]) => k !== 'id' && v != null) ? meta : null;
+  };
+  ERA.describeModel = function (meta) {
+    if (!meta) return '';
+    const parts = [];
+    if (meta.efforts || meta.mandatory != null) {
+      parts.push('思考' + (meta.mandatory ? '必须开启' : '可以关闭') + (meta.efforts ? '，强度可选 ' + meta.efforts.join(' / ') : '') + (meta.defaultEffort ? '（默认 ' + meta.defaultEffort + '）' : ''));
+    }
+    if (meta.defaults) parts.push('默认 ' + Object.entries(meta.defaults).map(([k, v]) => k + '=' + v).join('，'));
+    if (meta.maxOutput) parts.push('最大输出 ' + meta.maxOutput + ' tokens');
+    if (meta.context) parts.push('上下文 ' + meta.context);
+    if (meta.capabilities) parts.push('能力 ' + meta.capabilities.join('、'));
+    if (meta.params) parts.push('支持参数 ' + meta.params.join('、'));
+    return '供应商提供：' + parts.join('；');
+  };
+  /** { ids, info } from a /models response; info only for models that come with parameter information. */
+  ERA.parseModelList = function (data) {
+    const list = Array.isArray(data) ? data : (data && (data.data || data.models)) || [];
+    const ids = [], info = {};
+    for (const m of list) {
+      const id = typeof m === 'string' ? m : m && (m.id || m.name);
+      if (!id) continue;
+      ids.push(id);
+      const meta = typeof m === 'object' ? ERA.modelMeta(m) : null;
+      if (meta) info[id] = meta;
+    }
+    return { ids: ids.sort(), info };
+  };
+})();
+
+/** Toast what the provider made us change (the settings page shows it instead). */
+ERA.aiNotify = function (notes) {
+  if (ERA.UI && ERA.UI.toast) ERA.UI.toast('AI 参数已按模型要求自动调整：' + notes.map((n) => n.text).join('；') + '（可在设置里改）', 6000);
 };
 
 /** Chat with the active AI profile. Needs ERA.P.request and ERA.P.getConfig. */
@@ -363,12 +553,15 @@ ERA.aiChat = async function (messages, opts = {}) {
   if (!profile) throw new Error('未配置 AI，请在设置中添加 AI 接口');
   let content;
   if (profile.type === 'server') {
-    const res = await ERA.serverCall('POST', cfg.server.endpoints.aiChat || '/api/ai/chat', { messages, model: profile.model || undefined }, cfg);
+    const res = await ERA.serverCall('POST', cfg.server.endpoints.aiChat || '/api/ai/chat', { messages, model: profile.model || undefined, fresh: !!opts.fresh }, cfg);
     content = res.content;
+    if (res.notes && res.notes.length) (opts.onNotes || ERA.aiNotify)(res.notes);
   } else {
     if (!profile.baseUrl && profile.type !== 'relay') throw new Error('AI 接口地址为空');
     const req = ERA.buildAIRequest(profile, messages, opts);
-    const res = await ERA.P.request({ url: req.url, method: 'POST', headers: req.headers, body: JSON.stringify(req.body), timeout: (profile.timeout || 60) * 1000 });
+    const send = (body) => ERA.P.request({ url: req.url, method: 'POST', headers: req.headers, body: JSON.stringify(body), timeout: (profile.timeout || 60) * 1000 });
+    const { res, notes } = await ERA.aiSend(send, req.body, { fresh: !!opts.fresh });
+    if (notes.length) (opts.onNotes || ERA.aiNotify)(notes);
     if (!res.ok) throw new Error(`AI 接口错误 ${res.status}: ${String(res.text).slice(0, 200)}`);
     const data = JSON.parse(res.text);
     content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
@@ -839,16 +1032,18 @@ ERA.Store = {
     return this.enqueue('unphrase', { text, article_url: url });
   },
 
+  /** Record a change for the server. Pushed at once with 自动同步, otherwise on 立即同步; while the server is off
+   * nothing is recorded (立即同步 uploads the whole local book later). */
   async enqueue(kind, payload) {
     const cfg = await ERA.P.getConfig();
-    if (!cfg.server.enabled || !cfg.server.autoSync) return { synced: false, reason: 'server-disabled' };
+    if (!cfg.server.enabled) return { synced: false, reason: 'server-disabled' };
     let q = (await ERA.P.getData('syncQueue', [])) || [];
     // a cancel makes a still-pending add for the same item pointless
     if (kind === 'unword') q = q.filter((i) => !(i.kind === 'word' && (i.payload.lemma || i.payload.word || '').toLowerCase() === payload.lemma && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     if (kind === 'unphrase') q = q.filter((i) => !(i.kind === 'phrase' && this.normPhrase(i.payload.text) === this.normPhrase(payload.text) && (!payload.article_url || (i.payload.article || {}).url === payload.article_url)));
     q.push({ id: ERA.uid(), kind, payload });
     await ERA.P.setData('syncQueue', q);
-    return this.flush(cfg);
+    return cfg.server.autoSync ? this.flush(cfg) : { synced: false, reason: 'manual', pending: q.length };
   },
 
   /** Push queued items to the server; keeps failures for the next attempt. */
@@ -871,6 +1066,50 @@ ERA.Store = {
     }
     await ERA.P.setData('syncQueue', left);
     return { synced: left.length === 0, ok, pending: left.length, error: lastErr };
+  },
+
+  /** 立即同步: send pending changes (cancels first), then the whole local book — also what was saved before the
+   * server was set up. The server merges by lemma and sentence, so nothing is duplicated. */
+  async syncAll() {
+    const cfg = await ERA.P.getConfig();
+    if (!cfg.server.enabled || !cfg.server.baseUrl) return { synced: false, reason: 'server-disabled' };
+    const queued = await this.flush(cfg);
+    const r = { queued: queued.ok, pending: queued.pending, words: 0, newWords: 0, phrases: 0, failed: 0, error: queued.error || '' };
+    const items = [];
+    for (const e of await this.words()) {
+      const base = { word: e.word || e.lemma, lemma: e.lemma, phonetic: e.phonetic, translation: e.translation, meaning: e.meaning, pos: e.pos,
+        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology };
+      for (const o of e.occurrences && e.occurrences.length ? e.occurrences : [{}]) {
+        items.push({ ...base, word: o.surface || base.word, sentence: o.sentence, sentence_translation: o.sentence_translation, article: o.article });
+      }
+    }
+    const done = new Set();
+    for (let i = 0; i < items.length; i += 50) {
+      const chunk = items.slice(i, i + 50);
+      try {
+        const res = await ERA.serverCall('POST', cfg.server.endpoints.words + '/batch', { items: chunk }, cfg);
+        (res || []).forEach((x, j) => {
+          if (!x || x.error) { r.failed++; r.error = (x && x.error) || r.error; return; }
+          done.add(chunk[j].lemma);
+          if (x.created) r.newWords++;
+        });
+      } catch (err) { r.failed += chunk.length; r.error = err.message; }
+    }
+    r.words = done.size;
+    for (const ph of await this.phrases()) {
+      const { id, created, ...payload } = ph;
+      try { await ERA.serverCall('POST', cfg.server.endpoints.phrases, payload, cfg); r.phrases++; } catch (err) { r.failed++; r.error = err.message; }
+    }
+    r.synced = !r.failed && !r.pending;
+    return r;
+  },
+
+  /** One line for any of the sync buttons. */
+  syncMessage(r) {
+    if (r.reason === 'server-disabled') return '请先在设置里启用服务器并填写地址';
+    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待同步的修改` : '');
+    if (r.synced) return `✓ 已同步${what}。服务器上已有的会合并，不会重复`;
+    return `⚠ ${r.failed + r.pending} 项没有同步成功（${r.error}）；已同步${what}`;
   },
 
   async exportAll() {
@@ -1260,7 +1499,15 @@ ERA.Settings = {
         <div class="row" data-show="openai relay"><label>上游 Base URL</label><input type="text" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://api.openai.com/v1"></div>
         <div class="row" data-show="openai relay"><label>API Key</label><input type="password" name="apiKey" value="${esc(p.apiKey)}" autocomplete="off"></div>
         <div class="row"><label>模型</label><input type="text" name="model" value="${esc(p.model)}" list="era-models"><datalist id="era-models"></datalist><button class="btn gh" data-x="models">拉取模型</button></div>
-        <div class="row"><label>温度 / 超时(秒)</label><input type="text" name="temperature" value="${esc(p.temperature)}" style="width:80px"><input type="text" name="timeout" value="${esc(p.timeout)}" style="width:80px"></div>
+        <fieldset data-show="openai relay"><legend>请求参数（留空 = 不发送，用模型默认）</legend>
+          <div class="row"><label>温度 / top_p</label><input type="text" name="temperature" value="${esc(p.temperature ?? '')}" placeholder="默认" style="width:80px"><input type="text" name="topP" value="${esc(p.topP ?? '')}" placeholder="默认" style="width:80px"></div>
+          <div class="row"><label>最大输出 tokens</label><input type="text" name="maxTokens" value="${esc(p.maxTokens ?? '')}" placeholder="默认" style="width:120px"></div>
+          <div class="row"><label>思考强度</label><input type="text" name="reasoning" value="${esc(p.reasoning || '')}" list="era-efforts" placeholder="默认（不发送）" style="width:150px"><datalist id="era-efforts"></datalist>
+            <select name="reasoningFormat">${Object.entries(ERA.REASONING_FORMATS).map(([k, l]) => opt(k, p.reasoningFormat || 'auto', l)).join('')}</select></div>
+          <div class="row"><label>自定义参数 JSON</label><textarea name="extra" rows="2" placeholder='合并进每次请求，可覆盖上面各项，如 {"top_k":40}'>${esc(p.extra && typeof p.extra === 'object' ? JSON.stringify(p.extra) : p.extra || '')}</textarea></div>
+          <div class="muted" data-out="minfo"></div>
+        </fieldset>
+        <div class="row"><label>超时(秒)</label><input type="text" name="timeout" value="${esc(p.timeout)}" style="width:80px"></div>
         <div class="row" data-show="openai relay"><label>附加请求头 JSON</label><textarea name="headers" rows="2">${esc(JSON.stringify(p.headers || {}))}</textarea></div>
         <fieldset data-show="relay"><legend>跳板设置</legend>
           <div class="row"><label>跳板地址</label><input type="text" name="relay.url" value="${esc(r.url || '')}" placeholder="http://127.0.0.1:3000/v1"></div>
@@ -1307,14 +1554,51 @@ ERA.Settings = {
     showType();
     $('[name=type]').onchange = showType;
 
+    // parameter information the provider gave for each model on the last 拉取模型 (OpenRouter-style /models)
+    const modelInfo = p.modelInfo && p.modelInfo.id ? { [p.modelInfo.id]: p.modelInfo } : {};
+    const showModelInfo = () => {
+      const meta = modelInfo[val('model')] || null;
+      const efforts = meta && meta.efforts ? [...(meta.mandatory ? [] : ['off']), ...meta.efforts] : ['off', ...ERA.EFFORTS.slice(1)];
+      $('#era-efforts').innerHTML = efforts.map((e) => `<option value="${esc(e)}">${e === 'off' ? '关闭思考' : ''}</option>`).join('');
+      let text = meta ? ERA.describeModel(meta) : '点「拉取模型」后，供应商若提供这个模型的参数信息（如 OpenRouter）会显示在这里；多数供应商只给模型名。不确定时点「测试 AI」，模型报错会自动调整参数。';
+      if (meta && meta.mandatory && /^(off|none)$/i.test(val('reasoning'))) text = '⚠ 这个模型不能关闭思考，会自动改用最低一档。' + text;
+      let keys = [];
+      try { keys = Object.keys(ERA.parseExtra(val('extra'))).filter((k) => ERA.REASONING_KEYS.includes(k)); } catch (e) { /* shown on save */ }
+      if (keys.length) text = `⚠ 自定义参数 JSON 里的 ${keys.join('、')} 会覆盖「思考强度」。` + text;
+      out('minfo', text);
+    };
+    showModelInfo();
+    $('[name=model]').addEventListener('input', showModelInfo);
+    $('[name=reasoning]').addEventListener('input', showModelInfo);
+    $('[name=extra]').addEventListener('input', showModelInfo);
+    // after 测试 AI: put what the provider required into the form, so 保存设置 keeps it
+    const FIELD = { temperature: 'temperature', top_p: 'topP', max_tokens: 'maxTokens', reasoning_effort: 'reasoning', thinking: 'reasoning', reasoning: 'reasoning', enable_thinking: 'reasoning', thinking_budget: 'reasoning' };
+    const applyNotes = (notes) => {
+      const set = (n, v) => { const el = $(`[name="${n}"]`); if (el) el.value = v; };
+      for (const { fix } of notes) {
+        (fix.drop || []).forEach((k) => FIELD[k] && set(FIELD[k], ''));
+        if (fix.effort) set('reasoning', fix.effort);
+      }
+      showModelInfo();
+    };
+
     const collect = () => {
       const next = JSON.parse(JSON.stringify(cfg));
       const prof = next.ai.profiles.find((x) => x.id === next.ai.active) || next.ai.profiles[0];
       let headers = {};
       try { headers = JSON.parse(val('headers') || '{}'); } catch (e) { throw new Error('附加请求头不是合法 JSON'); }
+      const number = (n, label, int) => {
+        const v = val(n);
+        if (!v) return '';
+        if (isNaN(+v) || (int && !Number.isInteger(+v))) throw new Error(`${label}必须是${int ? '整数' : '数字'}，或留空`);
+        return +v;
+      };
+      ERA.parseExtra(val('extra')); // throws on invalid JSON
       Object.assign(prof, {
         name: val('name') || '未命名', type: val('type'), baseUrl: val('baseUrl') || '', apiKey: val('apiKey') || '', model: val('model'),
-        temperature: +val('temperature') || 0.2, timeout: +val('timeout') || 60, headers,
+        temperature: number('temperature', '温度'), topP: number('topP', 'top_p'), maxTokens: number('maxTokens', '最大输出 tokens ', true),
+        reasoning: val('reasoning') || '', reasoningFormat: val('reasoningFormat') || 'auto', extra: val('extra') || '',
+        modelInfo: modelInfo[val('model')] || null, timeout: +val('timeout') || 60, headers,
         relay: { url: val('relay.url'), mode: val('relay.mode'), targetHeader: val('relay.targetHeader') || 'X-Target-URL', relayKey: val('relay.relayKey') },
       });
       next.server = { ...next.server, enabled: val('s.enabled'), autoSync: val('s.autoSync'), baseUrl: val('s.baseUrl').replace(/\/+$/, ''), apiToken: val('s.apiToken') };
@@ -1349,16 +1633,22 @@ ERA.Settings = {
           case 'models': {
             const next = collect();
             out('ai', '拉取中…');
-            const models = await ERA.Settings.fetchModels(next);
-            $('#era-models').innerHTML = models.map((m) => `<option value="${esc(m)}">`).join('');
-            return out('ai', `共 ${models.length} 个模型，点击模型输入框选择`);
+            const { ids, info } = await ERA.Settings.fetchModels(next);
+            Object.assign(modelInfo, info);
+            $('#era-models').innerHTML = ids.map((m) => `<option value="${esc(m)}">`).join('');
+            showModelInfo();
+            const n = Object.keys(info).length;
+            return out('ai', `共 ${ids.length} 个模型${n ? `，${n} 个带参数信息` : '（供应商没有提供参数信息）'}，点击模型输入框选择`);
           }
           case 'testai': {
             const next = collect();
             out('ai', '测试中…');
             const t0 = Date.now();
-            const reply = await ERA.aiChat([{ role: 'user', content: 'Reply with the single word: OK' }], { cfg: next });
-            return out('ai', `✓ ${String(reply).slice(0, 40)}（${Date.now() - t0}ms）`);
+            let notes = [];
+            const reply = await ERA.aiChat([{ role: 'user', content: 'Reply with the single word: OK' }], { cfg: next, fresh: true, onNotes: (n) => (notes = n) });
+            if (notes.length && val('type') !== 'server') applyNotes(notes);
+            return out('ai', `✓ ${String(reply).slice(0, 40)}（${Date.now() - t0}ms）` +
+              (notes.length ? ` · 已按模型要求调整：${notes.map((x) => x.text).join('；')}${val('type') !== 'server' ? '。上面的参数已改好，点「保存设置」生效' : ''}` : ''));
           }
           case 'testsrv': {
             const next = collect();
@@ -1366,7 +1656,7 @@ ERA.Settings = {
             const h = await ERA.serverCall('GET', next.server.endpoints.health, null, next);
             return out('srv', `✓ ${h.name || 'server'} v${h.version || ''} · 生词 ${h.words ?? '-'} · AI ${h.ai ? '可用' : '未配置'}`);
           }
-          case 'sync': { await save(collect()); const r = await ERA.Store.flush(); return out('srv', r.synced ? `✓ 已同步 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error || r.reason}`, !r.synced); }
+          case 'sync': { await save(collect()); out('srv', '同步中…'); const r = await ERA.Store.syncAll(); return out('srv', ERA.Store.syncMessage(r), !r.synced); }
           case 'tts': { await save(collect()); return ERA.speak('This is a sample of the selected voice.'); }
           case 'export': return ERA.download('era-config.json', ERA.exportConfig(collect(), { includeSecrets: true }), 'application/json');
           case 'export-safe': return ERA.download('era-config-public.json', ERA.exportConfig(collect(), { includeSecrets: false }), 'application/json');
@@ -1382,9 +1672,10 @@ ERA.Settings = {
     };
   },
 
+  /** { ids, info } — info holds the parameter information some providers list per model. */
   async fetchModels(cfg) {
     const p = ERA.activeAIProfile(cfg);
-    if (p.type === 'server') return ((await ERA.serverCall('GET', '/api/ai/models', null, cfg)).models || []);
+    if (p.type === 'server') { const r = await ERA.serverCall('GET', '/api/ai/models', null, cfg); return { ids: r.models || [], info: r.info || {} }; }
     const base = String(p.baseUrl || '').replace(/\/+$/, '');
     let url = base + '/models';
     const headers = { ...(p.headers || {}) };
@@ -1396,8 +1687,7 @@ ERA.Settings = {
     }
     const res = await ERA.P.request({ url, method: 'GET', headers, timeout: 20000 });
     if (!res.ok) throw new Error(`拉取失败 ${res.status}: ${String(res.text).slice(0, 120)}`);
-    const data = JSON.parse(res.text);
-    return (data.data || data.models || []).map((m) => m.id || m.name || m).filter(Boolean).sort();
+    return ERA.parseModelList(JSON.parse(res.text));
   },
 
   /** In-page panel (userscript). */
@@ -1818,7 +2108,7 @@ ERA.UI.showBook = async function (tab = 'words') {
     <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
   card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
-  card.querySelector('[data-x=sync]').onclick = async () => { const r = await ERA.Store.flush(); UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成（${r.ok} 条）` : `仍有 ${r.pending} 条未同步：${r.error}`); UI.showBook(tab); };
+  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('同步中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
   card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
   card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
   card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');
@@ -2328,7 +2618,7 @@ const MENU = [
   ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
   ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
   ['📥 下载离线词典', downloadDictNow],
-  ['🔄 同步到服务器', async () => { const r = await ERA.Store.flush(); ERA.UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`); }],
+  ['🔄 同步到服务器', async () => { ERA.UI.toast('同步中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
 ];
 const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');
 

@@ -13,8 +13,8 @@
   $('web').onclick = () => { if (!cfg.server.baseUrl) return ($('msg').textContent = '请先在设置中配置服务器'); api.tabs.create({ url: cfg.server.baseUrl }); };
   $('sync').onclick = async () => {
     $('msg').textContent = '同步中…';
-    const r = await ERA.Store.flush();
-    $('msg').textContent = r.reason === 'server-disabled' ? '未启用服务器（设置 → 服务器）' : r.synced ? `✓ 已同步 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`;
+    $('msg').textContent = '同步中…';
+    $('msg').textContent = ERA.Store.syncMessage(await ERA.Store.syncAll());
     $('nq').textContent = ((await ERA.P.getData('syncQueue', [])) || []).length;
   };
 })();

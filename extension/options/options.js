@@ -37,7 +37,7 @@
     if (d.pdel) { await ERA.Store.removePhrase(d.pdel); renderPhrases(); }
     if (d.x === 'csv') ERA.download('era-vocab.csv', ERA.Store.toCSV(await ERA.Store.words()), 'text/csv');
     if (d.x === 'json') ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
-    if (d.x === 'sync') { const r = await ERA.Store.flush(); $('wmsg').textContent = r.reason === 'server-disabled' ? '未启用服务器' : r.synced ? `已同步 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error}`; }
+    if (d.x === 'sync') { $('wmsg').textContent = '同步中…'; $('wmsg').textContent = ERA.Store.syncMessage(await ERA.Store.syncAll()); }
   });
   if (location.hash === '#words') document.querySelector('[data-t=words]').click();
 })();

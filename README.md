@@ -33,8 +33,12 @@
   1. **直连** OpenAI 兼容接口（OpenAI / DeepSeek / 智谱 / 通义 / Ollama …）
   2. **本机 API 跳板**（one-api / new-api / LiteLLM / 自建转发）结构化配置：跳板地址、模式（OpenAI 兼容 或 转发：上游地址放在请求头）、上游地址请求头名、跳板密钥
   3. **使用服务器端 AI**（密钥只保存在服务器）
+- **通用请求参数**（扩展、脚本、服务器相同）：温度、top_p、最大输出 tokens、**思考强度**（关闭 / minimal / low / medium / high / xhigh / max，或供应商要求的其他值）、自定义参数 JSON（最后合并，可覆盖任何字段）。留空 = 不发送，用模型默认
+  - 思考强度按供应商的写法发送，默认按接口地址和模型名自动判断，也可手动选：`reasoning_effort`（OpenAI 标准：OpenAI、Gemini、Groq、xAI、Ollama…）、`thinking` + `reasoning_effort`（智谱 GLM）、`thinking` 开关（豆包等）、`enable_thinking`（通义千问 DashScope、硅基流动）、`reasoning` 对象（OpenRouter）
+  - **从供应商拉取参数结构**：「拉取模型」时读取 `/models` 里的参数信息（OpenRouter 等提供：支持哪些参数、思考强度可选值、能否关闭思考、默认参数、最大输出），显示在设置里，思考强度只列出可选值，模型不支持的温度 / top_p / max_tokens 不发送。多数供应商只给模型名，此时靠下一条
+  - **按报错自动适配**：供应商以 400 拒绝某个参数时（例如 GLM-5.3 不能关闭思考：`please use low, high, or max`），自动改成报错里列出的最接近的值或去掉该参数后重试，并提示；同一设置之后不再先失败。设置里的「测试」会把需要的调整直接填回表单
 - 服务器地址、Token、各接口路径可配置；**AI 与服务器配置支持导入 / 导出**（可选择不含密钥）
-- 本地生词本始终可用；启用服务器后自动同步，失败自动排队重试
+- 本地生词本始终可用；启用服务器后自动同步，失败自动排队重试。「立即同步」会先处理待同步的修改，再把本机整个生词本和好词好句上传（包括连接服务器之前加的），服务器按原形和例句合并，不会重复
 
 **服务器 + 网页应用**
 
@@ -151,7 +155,9 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 | `API_TOKEN` | 扩展 / 脚本的初始 Token，请求头 `Authorization: Bearer <token>`；在网页设置里重新生成后以数据库中的为准 |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | 网页管理员的初始账号密码，仅首次启动时写入；默认 `admin` / `123456`，用默认密码登录后必须先改密码 |
 | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` | 上游 OpenAI 兼容接口，例如 Z.AI `https://api.z.ai/api/coding/paas/v4`；模型可在网页设置里从上游拉取 |
-| `AI_EXTRA` | 合并进每次请求的 JSON，如 Z.AI 关闭思考加速：`{"thinking":{"type":"disabled"}}` |
+| `AI_TEMPERATURE` / `AI_TOP_P` / `AI_MAX_TOKENS` | 通用请求参数，留空不发送（默认温度 0.2） |
+| `AI_REASONING` / `AI_REASONING_FORMAT` | 思考强度（`off` / `low` / … / `max`，留空不发送）及写法（默认 `auto`），见上文“通用请求参数”；`off` 回答最快，不能关闭思考的模型会自动改用最低档 |
+| `AI_EXTRA` | 合并进每次请求的 JSON（最后合并，可覆盖上面各项）。1.5 及以前的默认值 `{"thinking":{"type":"disabled"}}` 升级时会自动改成 `AI_REASONING=off` |
 | `ENABLE_TTS` / `KOKORO_DTYPE` / `TTS_VOICE` | Kokoro 朗读；`q8` 模型约 90 MB |
 | `HF_ENDPOINT` | 模型下载镜像（国内用 `https://hf-mirror.com`） |
 | `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY` | 服务器需代理访问 AI 时 |
@@ -184,8 +190,8 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 | POST | `/api/quiz/:id/finish` | 结果与错题详情 |
 | GET | `/api/wrongbook`, POST `/api/wrongbook/:wordId` | 错题集 / 标记掌握 |
 | GET | `/api/stats` | 统计（总体 / 类别 / 词 / 题型 / 词根 / 每日） |
-| POST | `/api/ai/chat` | `{messages}` AI 代理（扩展“服务器 AI”模式） |
-| GET | `/api/ai/models` | 从上游拉取模型列表 |
+| POST | `/api/ai/chat` | `{messages, model?, fresh?}` AI 代理（扩展“服务器 AI”模式）→ `{content, notes}`，`notes` 为按供应商报错做的参数调整；`fresh` 不用已记住的调整（测试用） |
+| GET | `/api/ai/models` | 从上游拉取模型列表 → `{models, info}`，`info` 为供应商提供的各模型参数信息 |
 | GET / PUT | `/api/settings`，GET `/api/settings/export`，POST `/api/settings/import` | 服务器 AI 配置及导入导出（管理员） |
 | GET | `/api/tts?text=&voice=&speed=` | Kokoro 朗读（WAV） |
 | GET | `/api/fetch?url=` | 抓取网页 / PDF（网页阅读器用） |

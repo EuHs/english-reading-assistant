@@ -398,7 +398,7 @@ ERA.UI.showBook = async function (tab = 'words') {
     <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
   card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
-  card.querySelector('[data-x=sync]').onclick = async () => { const r = await ERA.Store.flush(); UI.toast(r.reason === 'server-disabled' ? '请先在设置中启用服务器' : r.synced ? `同步完成（${r.ok} 条）` : `仍有 ${r.pending} 条未同步：${r.error}`); UI.showBook(tab); };
+  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('同步中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
   card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
   card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
   card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');

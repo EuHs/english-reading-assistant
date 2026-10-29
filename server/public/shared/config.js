@@ -2,7 +2,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.4.0';
+ERA.VERSION = '1.6.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -46,7 +46,14 @@ ERA.defaultConfig = function () {
           baseUrl: 'https://api.openai.com/v1',
           apiKey: '',
           model: 'gpt-4o-mini',
+          // request parameters: '' leaves a parameter out, so the model's own default applies
           temperature: 0.2,
+          topP: '',
+          maxTokens: '',
+          reasoning: '', // thinking level: off / minimal / low / medium / high / xhigh / max, or a value the provider names
+          reasoningFormat: 'auto', // how the provider expects it, see ERA.REASONING_FORMATS
+          extra: '', // JSON merged last into every request
+          modelInfo: null, // parameter information the provider's /models gave for this model
           timeout: 60,
           headers: {},
           relay: {

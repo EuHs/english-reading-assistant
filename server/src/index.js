@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { openDb } from './db.js';
 import { Service } from './service.js';
-import { AIClient, lookup, CATEGORIES } from './lexicon.js';
+import { AIClient, lookup, CATEGORIES, ERA } from './lexicon.js';
 import { TTS, VOICES } from './tts.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -19,7 +19,7 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf
 const db = openDb(path.join(DATA, 'era.db'));
 
 /* ---------- settings: env defaults, overridable from the web app (stored in DB) ---------- */
-const AI_KEYS = ['ai_base_url', 'ai_api_key', 'ai_model', 'ai_extra'];
+const AI_KEYS = ['ai_base_url', 'ai_api_key', 'ai_model', 'ai_extra', 'ai_temperature', 'ai_top_p', 'ai_max_tokens', 'ai_reasoning', 'ai_reasoning_format', 'ai_model_info'];
 function settings() {
   const rows = Object.fromEntries(db.prepare('SELECT key, value FROM settings').all().map((r) => [r.key, r.value]));
   return {
@@ -27,11 +27,24 @@ function settings() {
     ai_api_key: rows.ai_api_key ?? env.AI_API_KEY ?? '',
     ai_model: rows.ai_model ?? env.AI_MODEL ?? 'glm-4.6',
     ai_extra: rows.ai_extra ?? env.AI_EXTRA ?? '',
+    // generic request parameters, written per provider by the shared builder ('' = not sent)
+    ai_temperature: rows.ai_temperature ?? env.AI_TEMPERATURE ?? '0.2',
+    ai_top_p: rows.ai_top_p ?? env.AI_TOP_P ?? '',
+    ai_max_tokens: rows.ai_max_tokens ?? env.AI_MAX_TOKENS ?? '',
+    ai_reasoning: rows.ai_reasoning ?? env.AI_REASONING ?? '',
+    ai_reasoning_format: rows.ai_reasoning_format ?? env.AI_REASONING_FORMAT ?? 'auto',
+    ai_model_info: rows.ai_model_info ?? '', // what the provider's /models said about the chosen model
     tts_voice: rows.tts_voice ?? env.TTS_VOICE ?? 'af_heart',
   };
 }
 const saveSetting = (k, v) => db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, v);
 const getSetting = (k) => db.prepare('SELECT value FROM settings WHERE key=?').get(k)?.value;
+// up to 1.5 the default extra JSON switched Z.AI thinking off; that is the thinking level "off" now, and left in the
+// extra JSON it would override whatever level is chosen (the DB value also takes precedence over .env's AI_EXTRA)
+if (getSetting('ai_reasoning') == null && String(settings().ai_extra).replace(/\s/g, '') === '{"thinking":{"type":"disabled"}}') {
+  saveSetting('ai_reasoning', 'off');
+  saveSetting('ai_extra', '');
+}
 const mask = (k) => (k ? k.slice(0, 4) + '****' + k.slice(-4) : '');
 
 /* ---------- web app admin account, and the API token that extensions / userscripts use ---------- */
@@ -191,11 +204,12 @@ api.get('/stats', wrap(() => svc.stats()));
 
 /* AI proxy (the extension's "server AI" mode and the web app) */
 api.post('/ai/chat', wrap(async (req) => {
-  const { messages, model } = req.body || {};
+  const { messages, model, fresh } = req.body || {}; // fresh: a settings test, show what the provider requires
   if (!Array.isArray(messages) || !messages.length) throw Object.assign(new Error('messages 不能为空'), { status: 400 });
-  return { content: await ai.chat(messages.slice(-20), { model: model || undefined }) };
+  const r = await ai.chat(messages.slice(-20), { model: model || undefined, withNotes: true, fresh: !!fresh });
+  return { content: r.content, notes: r.notes }; // notes: parameters adapted to the provider's errors
 }));
-api.get('/ai/models', wrap(async () => ({ models: await ai.models() })));
+api.get('/ai/models', wrap(async () => { const { ids, info } = await ai.models(); return { models: ids, info }; }));
 
 /* the API token extensions and userscripts connect with: shown and regenerated in the web app's settings */
 api.get('/settings/api-token', adminOnly, wrap(() => ({ token: apiToken() })));
@@ -210,21 +224,29 @@ api.put('/settings/api-token', adminOnly, wrap((req) => {
 
 /* server settings (AI upstream), import / export: admin only, they hold the AI key */
 api.get('/settings', adminOnly, wrap(() => { const s = settings(); return { ...s, ai_api_key: mask(s.ai_api_key), categories: CATEGORIES, voices: VOICES }; }));
+function checkSetting(k, v) {
+  const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
+  if (!v) return;
+  if ((k === 'ai_temperature' || k === 'ai_top_p') && isNaN(+v)) throw bad(`${k === 'ai_temperature' ? '温度' : 'top_p'}必须是数字，或留空`);
+  if (k === 'ai_max_tokens' && !/^\d+$/.test(v)) throw bad('最大输出 tokens 必须是正整数，或留空');
+  if (k === 'ai_reasoning_format' && !ERA.REASONING_FORMATS[v]) throw bad('不认识的思考参数写法：' + v);
+  if (k === 'ai_extra') try { ERA.parseExtra(v); } catch (e) { throw bad(e.message); }
+  if (k === 'ai_model_info') try { JSON.parse(v); } catch { throw bad('模型信息不是合法 JSON'); }
+}
 api.put('/settings', adminOnly, wrap((req) => {
-  for (const k of [...AI_KEYS, 'tts_voice']) {
-    const v = req.body[k];
-    if (typeof v !== 'string') continue;
-    if (k === 'ai_api_key' && v.includes('****')) continue; // masked value echoed back
-    if (k === 'ai_extra' && v) JSON.parse(v);
-    saveSetting(k, v.trim());
-  }
+  const changes = [...AI_KEYS, 'tts_voice'].map((k) => [k, req.body[k]])
+    .filter(([k, v]) => typeof v === 'string' && !(k === 'ai_api_key' && v.includes('****'))) // a masked key is echoed back
+    .map(([k, v]) => [k, v.trim()]);
+  changes.forEach(([k, v]) => checkSetting(k, v)); // all valid before anything is saved
+  changes.forEach(([k, v]) => saveSetting(k, v));
   const s = settings();
   return { ...s, ai_api_key: mask(s.ai_api_key) };
 }));
 api.get('/settings/export', adminOnly, wrap((req) => {
   const s = settings();
   const withKey = req.query.secrets === '1';
-  return { type: 'era-server-config', version: 1, exportedAt: new Date().toISOString(), ai: { base_url: s.ai_base_url, api_key: withKey ? s.ai_api_key : '', model: s.ai_model, extra: s.ai_extra }, tts: { voice: s.tts_voice } };
+  return { type: 'era-server-config', version: 1, exportedAt: new Date().toISOString(), ai: { base_url: s.ai_base_url, api_key: withKey ? s.ai_api_key : '', model: s.ai_model, extra: s.ai_extra,
+    params: { temperature: s.ai_temperature, top_p: s.ai_top_p, max_tokens: s.ai_max_tokens, reasoning: s.ai_reasoning, reasoning_format: s.ai_reasoning_format } }, tts: { voice: s.tts_voice } };
 }));
 api.post('/settings/import', adminOnly, wrap((req) => {
   const d = req.body || {};
@@ -234,6 +256,10 @@ api.post('/settings/import', adminOnly, wrap((req) => {
     if (d.ai.api_key) saveSetting('ai_api_key', d.ai.api_key);
     if (d.ai.model) saveSetting('ai_model', d.ai.model);
     if (typeof d.ai.extra === 'string') saveSetting('ai_extra', d.ai.extra);
+    const ps = d.ai.params || {};
+    for (const [k, key] of [['temperature', 'ai_temperature'], ['top_p', 'ai_top_p'], ['max_tokens', 'ai_max_tokens'], ['reasoning', 'ai_reasoning'], ['reasoning_format', 'ai_reasoning_format']]) {
+      if (typeof ps[k] === 'string') { checkSetting(key, ps[k].trim()); saveSetting(key, ps[k].trim()); }
+    }
   }
   if (d.tts && d.tts.voice) saveSetting('tts_voice', d.tts.voice);
   return { ok: true };

@@ -24,7 +24,15 @@ ERA.Settings = {
         <div class="row" data-show="openai relay"><label>上游 Base URL</label><input type="text" name="baseUrl" value="${esc(p.baseUrl)}" placeholder="https://api.openai.com/v1"></div>
         <div class="row" data-show="openai relay"><label>API Key</label><input type="password" name="apiKey" value="${esc(p.apiKey)}" autocomplete="off"></div>
         <div class="row"><label>模型</label><input type="text" name="model" value="${esc(p.model)}" list="era-models"><datalist id="era-models"></datalist><button class="btn gh" data-x="models">拉取模型</button></div>
-        <div class="row"><label>温度 / 超时(秒)</label><input type="text" name="temperature" value="${esc(p.temperature)}" style="width:80px"><input type="text" name="timeout" value="${esc(p.timeout)}" style="width:80px"></div>
+        <fieldset data-show="openai relay"><legend>请求参数（留空 = 不发送，用模型默认）</legend>
+          <div class="row"><label>温度 / top_p</label><input type="text" name="temperature" value="${esc(p.temperature ?? '')}" placeholder="默认" style="width:80px"><input type="text" name="topP" value="${esc(p.topP ?? '')}" placeholder="默认" style="width:80px"></div>
+          <div class="row"><label>最大输出 tokens</label><input type="text" name="maxTokens" value="${esc(p.maxTokens ?? '')}" placeholder="默认" style="width:120px"></div>
+          <div class="row"><label>思考强度</label><input type="text" name="reasoning" value="${esc(p.reasoning || '')}" list="era-efforts" placeholder="默认（不发送）" style="width:150px"><datalist id="era-efforts"></datalist>
+            <select name="reasoningFormat">${Object.entries(ERA.REASONING_FORMATS).map(([k, l]) => opt(k, p.reasoningFormat || 'auto', l)).join('')}</select></div>
+          <div class="row"><label>自定义参数 JSON</label><textarea name="extra" rows="2" placeholder='合并进每次请求，可覆盖上面各项，如 {"top_k":40}'>${esc(p.extra && typeof p.extra === 'object' ? JSON.stringify(p.extra) : p.extra || '')}</textarea></div>
+          <div class="muted" data-out="minfo"></div>
+        </fieldset>
+        <div class="row"><label>超时(秒)</label><input type="text" name="timeout" value="${esc(p.timeout)}" style="width:80px"></div>
         <div class="row" data-show="openai relay"><label>附加请求头 JSON</label><textarea name="headers" rows="2">${esc(JSON.stringify(p.headers || {}))}</textarea></div>
         <fieldset data-show="relay"><legend>跳板设置</legend>
           <div class="row"><label>跳板地址</label><input type="text" name="relay.url" value="${esc(r.url || '')}" placeholder="http://127.0.0.1:3000/v1"></div>
@@ -71,14 +79,51 @@ ERA.Settings = {
     showType();
     $('[name=type]').onchange = showType;
 
+    // parameter information the provider gave for each model on the last 拉取模型 (OpenRouter-style /models)
+    const modelInfo = p.modelInfo && p.modelInfo.id ? { [p.modelInfo.id]: p.modelInfo } : {};
+    const showModelInfo = () => {
+      const meta = modelInfo[val('model')] || null;
+      const efforts = meta && meta.efforts ? [...(meta.mandatory ? [] : ['off']), ...meta.efforts] : ['off', ...ERA.EFFORTS.slice(1)];
+      $('#era-efforts').innerHTML = efforts.map((e) => `<option value="${esc(e)}">${e === 'off' ? '关闭思考' : ''}</option>`).join('');
+      let text = meta ? ERA.describeModel(meta) : '点「拉取模型」后，供应商若提供这个模型的参数信息（如 OpenRouter）会显示在这里；多数供应商只给模型名。不确定时点「测试 AI」，模型报错会自动调整参数。';
+      if (meta && meta.mandatory && /^(off|none)$/i.test(val('reasoning'))) text = '⚠ 这个模型不能关闭思考，会自动改用最低一档。' + text;
+      let keys = [];
+      try { keys = Object.keys(ERA.parseExtra(val('extra'))).filter((k) => ERA.REASONING_KEYS.includes(k)); } catch (e) { /* shown on save */ }
+      if (keys.length) text = `⚠ 自定义参数 JSON 里的 ${keys.join('、')} 会覆盖「思考强度」。` + text;
+      out('minfo', text);
+    };
+    showModelInfo();
+    $('[name=model]').addEventListener('input', showModelInfo);
+    $('[name=reasoning]').addEventListener('input', showModelInfo);
+    $('[name=extra]').addEventListener('input', showModelInfo);
+    // after 测试 AI: put what the provider required into the form, so 保存设置 keeps it
+    const FIELD = { temperature: 'temperature', top_p: 'topP', max_tokens: 'maxTokens', reasoning_effort: 'reasoning', thinking: 'reasoning', reasoning: 'reasoning', enable_thinking: 'reasoning', thinking_budget: 'reasoning' };
+    const applyNotes = (notes) => {
+      const set = (n, v) => { const el = $(`[name="${n}"]`); if (el) el.value = v; };
+      for (const { fix } of notes) {
+        (fix.drop || []).forEach((k) => FIELD[k] && set(FIELD[k], ''));
+        if (fix.effort) set('reasoning', fix.effort);
+      }
+      showModelInfo();
+    };
+
     const collect = () => {
       const next = JSON.parse(JSON.stringify(cfg));
       const prof = next.ai.profiles.find((x) => x.id === next.ai.active) || next.ai.profiles[0];
       let headers = {};
       try { headers = JSON.parse(val('headers') || '{}'); } catch (e) { throw new Error('附加请求头不是合法 JSON'); }
+      const number = (n, label, int) => {
+        const v = val(n);
+        if (!v) return '';
+        if (isNaN(+v) || (int && !Number.isInteger(+v))) throw new Error(`${label}必须是${int ? '整数' : '数字'}，或留空`);
+        return +v;
+      };
+      ERA.parseExtra(val('extra')); // throws on invalid JSON
       Object.assign(prof, {
         name: val('name') || '未命名', type: val('type'), baseUrl: val('baseUrl') || '', apiKey: val('apiKey') || '', model: val('model'),
-        temperature: +val('temperature') || 0.2, timeout: +val('timeout') || 60, headers,
+        temperature: number('temperature', '温度'), topP: number('topP', 'top_p'), maxTokens: number('maxTokens', '最大输出 tokens ', true),
+        reasoning: val('reasoning') || '', reasoningFormat: val('reasoningFormat') || 'auto', extra: val('extra') || '',
+        modelInfo: modelInfo[val('model')] || null, timeout: +val('timeout') || 60, headers,
         relay: { url: val('relay.url'), mode: val('relay.mode'), targetHeader: val('relay.targetHeader') || 'X-Target-URL', relayKey: val('relay.relayKey') },
       });
       next.server = { ...next.server, enabled: val('s.enabled'), autoSync: val('s.autoSync'), baseUrl: val('s.baseUrl').replace(/\/+$/, ''), apiToken: val('s.apiToken') };
@@ -113,16 +158,22 @@ ERA.Settings = {
           case 'models': {
             const next = collect();
             out('ai', '拉取中…');
-            const models = await ERA.Settings.fetchModels(next);
-            $('#era-models').innerHTML = models.map((m) => `<option value="${esc(m)}">`).join('');
-            return out('ai', `共 ${models.length} 个模型，点击模型输入框选择`);
+            const { ids, info } = await ERA.Settings.fetchModels(next);
+            Object.assign(modelInfo, info);
+            $('#era-models').innerHTML = ids.map((m) => `<option value="${esc(m)}">`).join('');
+            showModelInfo();
+            const n = Object.keys(info).length;
+            return out('ai', `共 ${ids.length} 个模型${n ? `，${n} 个带参数信息` : '（供应商没有提供参数信息）'}，点击模型输入框选择`);
           }
           case 'testai': {
             const next = collect();
             out('ai', '测试中…');
             const t0 = Date.now();
-            const reply = await ERA.aiChat([{ role: 'user', content: 'Reply with the single word: OK' }], { cfg: next });
-            return out('ai', `✓ ${String(reply).slice(0, 40)}（${Date.now() - t0}ms）`);
+            let notes = [];
+            const reply = await ERA.aiChat([{ role: 'user', content: 'Reply with the single word: OK' }], { cfg: next, fresh: true, onNotes: (n) => (notes = n) });
+            if (notes.length && val('type') !== 'server') applyNotes(notes);
+            return out('ai', `✓ ${String(reply).slice(0, 40)}（${Date.now() - t0}ms）` +
+              (notes.length ? ` · 已按模型要求调整：${notes.map((x) => x.text).join('；')}${val('type') !== 'server' ? '。上面的参数已改好，点「保存设置」生效' : ''}` : ''));
           }
           case 'testsrv': {
             const next = collect();
@@ -130,7 +181,7 @@ ERA.Settings = {
             const h = await ERA.serverCall('GET', next.server.endpoints.health, null, next);
             return out('srv', `✓ ${h.name || 'server'} v${h.version || ''} · 生词 ${h.words ?? '-'} · AI ${h.ai ? '可用' : '未配置'}`);
           }
-          case 'sync': { await save(collect()); const r = await ERA.Store.flush(); return out('srv', r.synced ? `✓ 已同步 ${r.ok} 条` : `待同步 ${r.pending} 条：${r.error || r.reason}`, !r.synced); }
+          case 'sync': { await save(collect()); out('srv', '同步中…'); const r = await ERA.Store.syncAll(); return out('srv', ERA.Store.syncMessage(r), !r.synced); }
           case 'tts': { await save(collect()); return ERA.speak('This is a sample of the selected voice.'); }
           case 'export': return ERA.download('era-config.json', ERA.exportConfig(collect(), { includeSecrets: true }), 'application/json');
           case 'export-safe': return ERA.download('era-config-public.json', ERA.exportConfig(collect(), { includeSecrets: false }), 'application/json');
@@ -146,9 +197,10 @@ ERA.Settings = {
     };
   },
 
+  /** { ids, info } — info holds the parameter information some providers list per model. */
   async fetchModels(cfg) {
     const p = ERA.activeAIProfile(cfg);
-    if (p.type === 'server') return ((await ERA.serverCall('GET', '/api/ai/models', null, cfg)).models || []);
+    if (p.type === 'server') { const r = await ERA.serverCall('GET', '/api/ai/models', null, cfg); return { ids: r.models || [], info: r.info || {} }; }
     const base = String(p.baseUrl || '').replace(/\/+$/, '');
     let url = base + '/models';
     const headers = { ...(p.headers || {}) };
@@ -160,8 +212,7 @@ ERA.Settings = {
     }
     const res = await ERA.P.request({ url, method: 'GET', headers, timeout: 20000 });
     if (!res.ok) throw new Error(`拉取失败 ${res.status}: ${String(res.text).slice(0, 120)}`);
-    const data = JSON.parse(res.text);
-    return (data.data || data.models || []).map((m) => m.id || m.name || m).filter(Boolean).sort();
+    return ERA.parseModelList(JSON.parse(res.text));
   },
 
   /** In-page panel (userscript). */
