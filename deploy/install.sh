@@ -2,12 +2,19 @@
 # Runs ON the server (as root). Installs Node.js, the app, a systemd service, and opens the port.
 # Usage: bash install.sh [/path/to/uploaded/server-dir]
 set -euo pipefail
+[ "$(id -u)" -eq 0 ] || { echo "Run this as root: sudo bash $0"; exit 1; }
 SRC="${1:-$(cd "$(dirname "$0")/../server" && pwd)}"
 APP=/opt/era
 PORT="${PORT:-8080}"
 NODE_VER="${NODE_VER:-v22.14.0}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 NPM_TIMEOUT="${NPM_TIMEOUT:-1200}"   # seconds; past this, install without the optional Kokoro TTS packages
+
+# which version is being installed (an old checkout is the first thing to rule out when a step misbehaves)
+ver=$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$SRC/package.json" | head -1)
+# as the checkout's owner: under sudo, git refuses a repository owned by another user ("dubious ownership")
+rev=$(runuser -u "$(stat -c %U "$SRC")" -- git -C "$SRC" log -1 --format='%h %cd' --date=short 2>/dev/null || true)
+echo "English Reading Assistant server v${ver}${rev:+ (git $rev)}"
 
 echo "==> 1/5 Node.js (>= 22.13 for built-in SQLite)"
 need_node=1
@@ -51,12 +58,41 @@ cd "$APP"
 # from GitHub on every Linux x64 server, with no timeout: from mainland China that stalls this step indefinitely.
 # The server runs Kokoro on the CPU, and the CPU libraries ship inside the npm package itself.
 export ONNXRUNTIME_NODE_INSTALL_CUDA=skip
-npm_args=(--omit=dev --no-audit --no-fund --update-notifier=false --registry="$NPM_REGISTRY")
-# npm ci starts from an empty node_modules, so files half-written by an interrupted earlier run can't linger
-if ! timeout --foreground "$NPM_TIMEOUT" npm ci "${npm_args[@]}" --include=optional; then
+# sudo -E keeps the login user's HOME: root-owned files in that user's ~/.npm would break their own npm later
+export npm_config_cache=~root/.npm
+npm_args=(--omit=dev --no-audit --no-fund --no-progress --update-notifier=false --registry="$NPM_REGISTRY")
+# every 30 s, say how far npm got and which package's install script is running, so a stall names its cause
+npm_progress() {
+  local s=0 mb busy
+  while :; do
+    read -rt 30 <> <(:) || true   # a 30 s pause with no sleep process that could outlive the loop
+    s=$((s + 30))
+    mb=$(du -sm node_modules 2>/dev/null | cut -f1) || true
+    busy=$(for c in /proc/[0-9]*/cwd; do readlink "$c" 2>/dev/null || true; done |
+      sed -n "s#^$APP/node_modules/##p" | sort -u | tr '\n' ' ') || true
+    echo "    ${s}s: node_modules ${mb:-0} MB${busy:+, running the install script of ${busy% }}"
+  done
+}
+stop_progress() { kill "$progress" 2>/dev/null || true; }
+npm_progress & progress=$!
+trap stop_progress EXIT
+# npm ci starts from an empty node_modules, so files half-written by an interrupted earlier run can't linger.
+# timeout puts npm in a process group of its own and stops the whole group: signalled alone, npm keeps waiting
+# for a running install script, which keeps downloading. Ctrl+C is passed on to that group too.
+npm_ci() {
+  local t rc=0
+  timeout -k 20 "$NPM_TIMEOUT" npm ci "${npm_args[@]}" "$@" &
+  t=$!
+  trap 'kill -INT "$t" 2>/dev/null; exit 130' INT TERM HUP
+  wait "$t" || rc=$?
+  trap - INT TERM HUP
+  return "$rc"
+}
+if ! npm_ci --include=optional; then
   echo "    npm with the optional Kokoro TTS packages failed or ran past ${NPM_TIMEOUT}s; installing the server without them"
-  npm ci "${npm_args[@]}" --omit=optional
+  npm_ci --omit=optional
 fi
+stop_progress; trap - EXIT
 if node -e "import('kokoro-js').then(()=>process.exit(0),()=>process.exit(1))"; then echo "    Kokoro TTS: ok"; else echo "    Kokoro TTS unavailable (web app falls back to browser voices)"; fi
 chown -R era:era "$APP"
 

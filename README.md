@@ -121,7 +121,7 @@ npm start                  # http://localhost:8080
 
 ```bash
 # 可选：deploy/server.env 会作为服务器的 .env（已 git-ignore）
-deploy/deploy.sh root@<服务器IP> 8080
+deploy/deploy.sh root@<服务器IP> 8080      # 用 ubuntu 等普通账号登录也可以，会用 sudo 安装
 ```
 
 脚本会上传 `server/`，在服务器上安装 Node（npmmirror 镜像）、依赖、systemd 服务 `era`，并打开防火墙端口。云厂商的**安全组**需放行该端口。
@@ -130,14 +130,16 @@ deploy/deploy.sh root@<服务器IP> 8080
 ### 在服务器上从 GitHub 拉取安装
 
 ```bash
-apt-get install -y git || yum install -y git
-git clone https://github.com/EuHs/english-reading-assistant.git /tmp/era-src
-PORT=8080 AI_API_KEY=你的key bash /tmp/era-src/deploy/install.sh
-# 升级：cd /tmp/era-src && git pull && PORT=8080 bash deploy/install.sh
+sudo apt-get install -y git || sudo yum install -y git
+git clone https://github.com/EuHs/english-reading-assistant.git ~/era-src
+cd ~/era-src && sudo env PORT=8080 AI_API_KEY=你的key bash deploy/install.sh
+# 升级：cd ~/era-src && git pull && sudo env PORT=8080 bash deploy/install.sh
 ```
 
-安装分 5 步：Node.js → 程序文件（`/opt/era`）→ npm 依赖 → systemd 服务 → 防火墙。第 3 步从 npmmirror 下载约 150 MB，通常几分钟；超过 20 分钟（`NPM_TIMEOUT`，秒）会改为不装可选的 Kokoro 朗读依赖，服务器照常可用，网页朗读改用浏览器语音。
-v1.4.0 及更早的 `install.sh` 在 x86 服务器上会卡在第 3 步（原因见上方 `ONNXRUNTIME_NODE_INSTALL_CUDA`）：按 Ctrl+C 结束，`git pull` 后重新运行即可，不用清理。
+安装需要 root（root 登录可省略 `sudo`）。开头一行显示正在安装的版本，如 `English Reading Assistant server v1.4.2 (git 1a2b3c4 2026-10-29)`，可以确认 `git pull` 是否生效。
+安装分 5 步：Node.js → 程序文件（`/opt/era`）→ npm 依赖 → systemd 服务 → 防火墙。第 3 步从 npmmirror 下载约 150 MB，通常几分钟，期间每 30 秒显示一次进度：已下载的大小，以及正在运行哪个包的安装脚本——卡住时据此就能看出卡在哪个包。
+超过 20 分钟（`NPM_TIMEOUT`，秒）会停止 npm 及其安装脚本，改为不装可选的 Kokoro 朗读依赖，服务器照常可用，网页朗读改用浏览器语音；按 Ctrl+C 也会把它们一起停掉。
+v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `npm packages`），在 x86 服务器上会卡住（原因见上方 `ONNXRUNTIME_NODE_INSTALL_CUDA`）：按 Ctrl+C 结束，`git pull` 后重新运行即可，不用清理。
 
 部署完成后在扩展/脚本“设置 → 服务器”填写 `http://<IP>:8080` 与 API Token 并启用；或在网页应用“设置 → 生成扩展/油猴脚本配置文件”，再到扩展里导入。
 
