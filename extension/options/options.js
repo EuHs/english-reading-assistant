@@ -10,7 +10,8 @@
 
   async function renderWords() {
     const words = await ERA.Store.words();
-    $('words').innerHTML = `<div class="btns"><button class="btn gh" data-x="csv">导出 CSV</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="sync">同步到服务器</button><span class="muted" id="wmsg">共 ${words.length} 个生词</span></div>
+    $('words').innerHTML = `<div class="muted">本机保存过的全部生词（所有文章），用于导出备份和上传服务器。阅读时点页面上的「本文生词本」看这篇文章的生词；复习全部生词请到服务器网页。</div>
+      <div class="btns"><button class="btn gh" data-x="csv">导出 CSV</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="sync">上传到服务器</button><span class="muted">共 ${words.length} 个生词</span><span class="muted" id="wmsg"></span></div>
       <table><tr><th>单词</th><th>释义 / 词根</th><th>例句与文章</th><th></th></tr>
       ${words.map((w) => `<tr><td><b>${esc(w.word)}</b><div class="muted">${esc(w.lemma)} ${w.phonetic ? '/' + esc(w.phonetic) + '/' : ''}</div></td>
         <td>${esc(w.meaning || '')}<div class="muted">${esc((w.translation || '').slice(0, 100))}</div>${(w.roots || []).length ? `<div class="muted">词根：${w.roots.map(esc).join(', ')}</div>` : ''}</td>
@@ -33,11 +34,12 @@
   };
   document.addEventListener('click', async (e) => {
     const d = e.target.dataset;
-    if (d.del) { await ERA.Store.removeWord(d.del); renderWords(); }
-    if (d.pdel) { await ERA.Store.removePhrase(d.pdel); renderPhrases(); }
+    const everywhere = '会删除它在本机和服务器上的全部记录（所有文章）。只取消某篇文章里的标记，请在那篇文章的「本文生词本」里点 ×。确定删除？';
+    if (d.del) { if (!confirm(everywhere)) return; await ERA.Store.removeWord(d.del); renderWords(); }
+    if (d.pdel) { if (!confirm(everywhere)) return; await ERA.Store.removePhrase(d.pdel); renderPhrases(); }
     if (d.x === 'csv') ERA.download('era-vocab.csv', ERA.Store.toCSV(await ERA.Store.words()), 'text/csv');
     if (d.x === 'json') ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
-    if (d.x === 'sync') { $('wmsg').textContent = '同步中…'; $('wmsg').textContent = ERA.Store.syncMessage(await ERA.Store.syncAll()); }
+    if (d.x === 'sync') { $('wmsg').textContent = '上传中…'; $('wmsg').textContent = ERA.Store.syncMessage(await ERA.Store.syncAll()); }
   });
   if (location.hash === '#words') document.querySelector('[data-t=words]').click();
 })();

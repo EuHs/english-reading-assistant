@@ -46,6 +46,10 @@ export function openDb(file) {
   CREATE INDEX IF NOT EXISTS idx_qq_quiz ON quiz_questions(quiz_id);
   CREATE INDEX IF NOT EXISTS idx_art_cat ON articles(category);
   `);
+  // columns added after the first release (CREATE TABLE IF NOT EXISTS leaves existing tables as they were)
+  for (const [table, col] of [['words', 'synonyms TEXT'], ['quizzes', 'types TEXT']]) {
+    if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col.split(' ')[0])) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
+  }
   return db;
 }
 

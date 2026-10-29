@@ -7,7 +7,7 @@
   const pct = (x) => (x == null ? '—' : Math.round(x * 100) + '%');
   const spk = (t) => `<button class="spk" data-speak="${esc(t)}" title="朗读">🔊</button>`;
   const CATS = ERA.CATEGORIES;
-  const TYPE_LABEL = { en2zh: '英译中', zh2en: '中译英', cloze: '例句填空' };
+  const TYPE_LABEL = { cloze: '单词填空', ctx: '句中词义', zh2en: '看中文选单词', en2zh: '看单词选中文' };
   const ROOT_LABEL = { prefix: '前缀', root: '词根', suffix: '后缀' };
   const state = { words: { q: '', category: '', root: '', sort: 'new', page: 1 }, phrases: { q: '', category: '', kind: '' } };
 
@@ -226,7 +226,7 @@
   }
 
   /* ---------- quiz ---------- */
-  const quizCfg = { size: 20, category: '', root: '', mode: 'all' };
+  const quizCfg = { size: 20, category: '', root: '', mode: 'all', types: Object.keys(TYPE_LABEL) };
   async function pageQuiz() {
     const roots = await api('GET', '/api/roots');
     await (catCounts || loadCatCounts());
@@ -235,18 +235,25 @@
       <h4>范围</h4><div class="chips"><span class="chip ${quizCfg.mode === 'all' ? 'on' : ''}" data-mode="all">全部生词</span><span class="chip ${quizCfg.mode === 'wrong' ? 'on' : ''}" data-mode="wrong">仅错题集</span></div>
       <h4>类别</h4>${catChips(quizCfg.category, catCounts)}
       <h4>词根</h4><select id="root"><option value="">不限</option>${roots.map((r) => `<option value="${esc(r.root)}" ${quizCfg.root === r.root ? 'selected' : ''}>${esc(r.root)} ${esc(r.meaning || '')} (${r.words})</option>`).join('')}</select>
-      <p class="muted">题型随机：英译中 / 中译英 / 例句填空，每题 4 个选项（1 个正确 + 3 个干扰项）。键盘 1-4 选择，回车下一题。</p>
+      <h4>题型（可多选）</h4><div class="chips">${Object.entries(TYPE_LABEL).map(([t, l]) => `<span class="chip ${quizCfg.types.includes(t) ? 'on' : ''}" data-type="${t}">${l}</span>`).join('')}</div>
+      <p class="muted">单词填空：例句挖空，选应填的单词；句中词义：选单词在这句话里的意思；看中文选单词：按中文意思选单词；看单词选中文。每题 4 个选项（1 个正确 + 3 个干扰项），干扰项不会和正确答案意思相同（同义词不会出现）。需要例句的题型只出给有例句的生词。键盘 1-4 选择，回车下一题。</p>
       <button class="btn" id="start">开始测验</button> <span class="muted" id="msg"></span></div>
       <h3 style="margin-top:20px">历史记录</h3><div class="card" id="hist">加载中…</div></div>`;
     $app.querySelectorAll('[data-size]').forEach((c) => (c.onclick = () => { quizCfg.size = +c.dataset.size; pageQuiz(); }));
     $app.querySelectorAll('[data-mode]').forEach((c) => (c.onclick = () => { quizCfg.mode = c.dataset.mode; pageQuiz(); }));
+    $app.querySelectorAll('[data-type]').forEach((c) => (c.onclick = () => {
+      const t = c.dataset.type, on = quizCfg.types.includes(t);
+      if (on && quizCfg.types.length === 1) return; // at least one type
+      quizCfg.types = on ? quizCfg.types.filter((x) => x !== t) : Object.keys(TYPE_LABEL).filter((x) => x === t || quizCfg.types.includes(x));
+      pageQuiz();
+    }));
     $app.querySelectorAll('[data-cat]').forEach((c) => (c.onclick = () => { quizCfg.category = c.dataset.cat; pageQuiz(); }));
     document.getElementById('root').onchange = (e) => (quizCfg.root = e.target.value);
     document.getElementById('start').onclick = async () => {
       try { runQuiz(await api('POST', '/api/quiz', quizCfg)); } catch (e) { document.getElementById('msg').textContent = e.message; }
     };
     const hist = await api('GET', '/api/quiz');
-    document.getElementById('hist').innerHTML = hist.length ? `<table><tr><th>时间</th><th>范围</th><th>成绩</th><th></th></tr>${hist.slice(0, 20).map((q) => `<tr><td>${esc(q.created_at)}</td><td>${q.mode === 'wrong' ? '错题集' : '全部'}${q.category ? ' · ' + esc(q.category) : ''}${q.root ? ' · ' + esc(q.root) : ''}</td><td>${q.correct}/${q.total}</td><td>${q.finished_at ? `<a href="#" data-review="${q.id}">查看</a>` : `<a href="#" data-resume="${q.id}">继续</a>`}</td></tr>`).join('')}</table>` : '<div class="muted">还没有测验记录</div>';
+    document.getElementById('hist').innerHTML = hist.length ? `<table><tr><th>时间</th><th>范围</th><th>题型</th><th>成绩</th><th></th></tr>${hist.slice(0, 20).map((q) => `<tr><td>${esc(q.created_at)}</td><td>${q.mode === 'wrong' ? '错题集' : '全部'}${q.category ? ' · ' + esc(q.category) : ''}${q.root ? ' · ' + esc(q.root) : ''}</td><td class="muted">${String(q.types || '').split(',').filter(Boolean).map((t) => TYPE_LABEL[t] || t).join('、') || '混合'}</td><td>${q.correct}/${q.total}</td><td>${q.finished_at ? `<a href="#" data-review="${q.id}">查看</a>` : `<a href="#" data-resume="${q.id}">继续</a>`}</td></tr>`).join('')}</table>` : '<div class="muted">还没有测验记录</div>';
     $app.querySelectorAll('[data-review]').forEach((a) => (a.onclick = async (e) => { e.preventDefault(); showResult(await api('POST', `/api/quiz/${a.dataset.review}/finish`)); }));
     $app.querySelectorAll('[data-resume]').forEach((a) => (a.onclick = async (e) => { e.preventDefault(); runQuiz(await api('GET', '/api/quiz/' + a.dataset.resume)); }));
   }
@@ -262,7 +269,7 @@
       $app.innerHTML = `<div class="quiz"><div class="bar" style="justify-content:space-between"><span class="muted">第 ${i + 1} / ${quiz.questions.length} 题</span><span class="muted">正确 ${quiz.questions.filter((x) => x.correct).length}</span><button class="btn gh sm" id="quit">结束测验</button></div>
         <div class="progress"><i style="width:${(i / quiz.questions.length) * 100}%"></i></div>
         <div class="card"><div class="q-type">${TYPE_LABEL[q.type]}</div>
-        <div class="q-prompt ${long ? 'long' : ''}">${esc(q.prompt)} ${q.type !== 'zh2en' ? spk(q.prompt.replace('_____', '…')) : ''}</div>
+        <div class="q-prompt ${long ? 'long' : ''}">${q.type === 'ctx' ? esc(q.prompt).replace(/【([^】]*)】/, '<span class="mark">$1</span>') : esc(q.prompt)} ${q.type !== 'zh2en' ? spk(q.prompt.replace('_____', '…').replace(/[【】]/g, '')) : ''}</div>
         ${q.hint ? `<div class="muted">${esc(q.hint)}</div>` : ''}
         <div class="opts">${q.options.map((o, k) => `<button class="opt" data-k="${k}"><b>${k + 1}</b>${esc(o)}</button>`).join('')}</div>
         <div id="fb"></div></div></div>`;
@@ -342,7 +349,7 @@
         return (document.getElementById('b').onclick = done);
       }
       const q = qs2[i];
-      $app.innerHTML = `<div class="quiz"><div class="muted">错题再测 ${i + 1} / ${qs2.length}</div><div class="card"><div class="q-type">${TYPE_LABEL[q.type]}</div><div class="q-prompt ${q.prompt.length > 40 ? 'long' : ''}">${esc(q.prompt)}</div>${q.hint ? `<div class="muted">${esc(q.hint)}</div>` : ''}
+      $app.innerHTML = `<div class="quiz"><div class="muted">错题再测 ${i + 1} / ${qs2.length}</div><div class="card"><div class="q-type">${TYPE_LABEL[q.type]}</div><div class="q-prompt ${q.prompt.length > 40 ? 'long' : ''}">${q.type === 'ctx' ? esc(q.prompt).replace(/【([^】]*)】/, '<span class="mark">$1</span>') : esc(q.prompt)}</div>${q.hint ? `<div class="muted">${esc(q.hint)}</div>` : ''}
         <div class="opts">${q.opts.map((o, k) => `<button class="opt" data-k="${k}"><b>${k + 1}</b>${esc(o.t)}</button>`).join('')}</div></div></div>`;
       $app.querySelectorAll('.opt').forEach((b) => (b.onclick = () => {
         const k = +b.dataset.k;

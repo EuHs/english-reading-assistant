@@ -6,6 +6,28 @@ const now = () => new Date().toISOString();
 const clip = (s, n) => (s == null ? '' : String(s).slice(0, n));
 const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
+/* ---------- quiz helpers ---------- */
+export const QUIZ_TYPES = ['cloze', 'ctx', 'zh2en', 'en2zh']; // 单词填空 / 句中词义 / 看中文选单词 / 看单词选中文
+const blankRe = (surface) => new RegExp(`\\b${String(surface || '').replace(/[^A-Za-z'-]/g, '') || '\\0'}\\b`, 'i');
+// Chinese senses of a gloss: "a. 不情愿的, 勉强的\n[法] 难以处理的" -> 不情愿, 勉强, 难以处理
+export const senses = (text) => [...new Set(String(text || '')
+  .replace(/\[[^\]]*\]|【[^】]*】|（[^）]*）|\([^)]*\)/g, ' ')
+  .split(/[\s,，;；、/|.]+/)
+  .map((t) => t.replace(/[^\u4e00-\u9fff]/g, '').replace(/^(使|令|被)|[的地得]$/g, ''))
+  .filter((t) => t.length >= 2))];
+const glossOf = (w) => `${w.meaning || ''} ${w.translation || ''}`;
+// two senses say the same thing: equal, or most of their characters shared (不情愿 / 不愿意)
+const similarSense = (a, b) => {
+  if (a === b) return true;
+  const x = new Set(a.replace(/[的地得之者性了]/g, '')), y = new Set(b.replace(/[的地得之者性了]/g, ''));
+  let n = 0;
+  for (const c of x) if (y.has(c)) n++;
+  return n >= 2 && n / Math.min(x.size, y.size) >= 0.66;
+};
+const sharesSense = (as, bs) => as.some((a) => bs.some((b) => similarSense(a, b)));
+const sensesOf = (w) => w._senses || (w._senses = senses(glossOf(w)));
+const synonymsOf = (p) => (Array.isArray(p.synonyms) ? p.synonyms : []).map((x) => String(x).toLowerCase().replace(/[^a-z' -]/g, '').trim()).filter(Boolean).slice(0, 30);
+
 export class Service {
   constructor(db, ai) {
     this.db = db;
@@ -101,17 +123,17 @@ export class Service {
       let w = db.prepare('SELECT * FROM words WHERE lemma=?').get(lemma);
       const created = !w;
       if (!w) {
-        const r = db.prepare(`INSERT INTO words(lemma,phonetic,pos,translation,meaning,definitions,morphology,forms,tenses,etymology,enriched)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(lemma, p.phonetic || d.phonetic || '', p.pos || '', p.translation || d.translation || '', p.meaning || '',
-          J.s(p.definitions || []), J.s(morphology), J.s(p.forms || null), J.s(p.tenses || []), p.etymology || '', p.forms && p.tenses ? 1 : 0);
+        const r = db.prepare(`INSERT INTO words(lemma,phonetic,pos,translation,meaning,definitions,morphology,forms,tenses,etymology,enriched,synonyms)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(lemma, p.phonetic || d.phonetic || '', p.pos || '', p.translation || d.translation || '', p.meaning || '',
+          J.s(p.definitions || []), J.s(morphology), J.s(p.forms || null), J.s(p.tenses || []), p.etymology || '', p.forms && p.tenses ? 1 : 0, J.s(synonymsOf(p)));
         w = db.prepare('SELECT * FROM words WHERE id=?').get(r.lastInsertRowid);
       } else {
         const oldMorph = J.p(w.morphology, []);
         db.prepare(`UPDATE words SET phonetic=COALESCE(NULLIF(phonetic,''),?), pos=COALESCE(NULLIF(pos,''),?), translation=COALESCE(NULLIF(translation,''),?),
           meaning=COALESCE(NULLIF(meaning,''),?), morphology=?, forms=COALESCE(forms,?), tenses=CASE WHEN tenses IS NULL OR tenses='[]' THEN ? ELSE tenses END,
-          etymology=COALESCE(NULLIF(etymology,''),?), updated_at=datetime('now') WHERE id=?`)
+          etymology=COALESCE(NULLIF(etymology,''),?), synonyms=CASE WHEN synonyms IS NULL OR synonyms='[]' THEN ? ELSE synonyms END, updated_at=datetime('now') WHERE id=?`)
           .run(p.phonetic || '', p.pos || '', p.translation || d.translation || '', p.meaning || '', J.s(morphology.length > oldMorph.length ? morphology : oldMorph),
-            J.s(p.forms || null), J.s(p.tenses || []), p.etymology || '', w.id);
+            J.s(p.forms || null), J.s(p.tenses || []), p.etymology || '', J.s(synonymsOf(p)), w.id);
       }
       db.prepare('INSERT OR IGNORE INTO word_forms(word_id, form) VALUES(?,?)').run(w.id, word.toLowerCase());
       db.prepare(`INSERT OR IGNORE INTO occurrences(word_id,article_id,surface,sentence,sentence_translation,meaning,source) VALUES(?,?,?,?,?,?,?)`)
@@ -146,6 +168,7 @@ export class Service {
     db.prepare(`UPDATE words SET phonetic=COALESCE(NULLIF(phonetic,''),?), pos=COALESCE(NULLIF(pos,''),?), meaning=COALESCE(NULLIF(meaning,''),?),
       definitions=?, morphology=?, forms=?, tenses=?, etymology=COALESCE(NULLIF(etymology,''),?), enriched=1, updated_at=datetime('now') WHERE id=?`)
       .run(a.phonetic || '', a.pos || '', a.meaning || '', J.s(a.definitions || []), J.s(morph), J.s(a.forms || null), J.s(a.tenses || []), a.etymology || '', id);
+    if (synonymsOf(a).length) db.prepare('UPDATE words SET synonyms=? WHERE id=?').run(J.s(synonymsOf(a)), id); // keeps them out of quiz options
     tx(db, () => {
       // the AI's morphology replaces the offline root-table guess
       if (Array.isArray(a.morphology) && a.morphology.length) db.prepare('DELETE FROM word_roots WHERE word_id=?').run(id);
@@ -338,23 +361,40 @@ export class Service {
     return m.replace(/\s+/g, ' ').slice(0, 48) || w.lemma;
   }
 
-  startQuiz({ size = 20, category, root, mode = 'all' } = {}) {
+  /** `types`: any of QUIZ_TYPES (all when none are given). Each word gets the least-used type it can do;
+   * 单词填空 and 句中词义 need an example sentence that contains the word. */
+  startQuiz({ size = 20, category, root, mode = 'all', types } = {}) {
     size = [20, 50, 80, 100].includes(+size) ? +size : Math.min(100, Math.max(1, +size || 20));
+    const want = (Array.isArray(types) ? types : String(types || '').split(',')).filter((t) => QUIZ_TYPES.includes(t));
+    const chosen = want.length ? [...new Set(want)] : QUIZ_TYPES.slice();
     const db = this.db;
     const f = this.wordFilter({ category, root });
     const extra = mode === 'wrong' ? `${f.sql ? 'AND' : 'WHERE'} w.id IN (SELECT word_id FROM wrongbook WHERE mastered=0)` : '';
     const pool = db.prepare(`SELECT w.* FROM words w ${f.sql} ${extra}`).all(...f.args);
     if (!pool.length) throw Object.assign(new Error(mode === 'wrong' ? '错题集为空' : '该范围内没有生词'), { status: 400 });
-    const picked = shuffle(pool.slice()).slice(0, size);
-    const all = db.prepare('SELECT id, lemma, meaning, translation FROM words').all();
+    const sentenceOf = (w) => {
+      const occs = db.prepare("SELECT surface, sentence, sentence_translation, meaning FROM occurrences WHERE word_id=? AND sentence<>''").all(w.id)
+        .filter((o) => blankRe(o.surface).test(o.sentence));
+      return occs.length ? occs[Math.floor(Math.random() * occs.length)] : null;
+    };
+    const used = Object.fromEntries(chosen.map((t) => [t, 0]));
+    const items = [];
+    for (const w of shuffle(pool.slice())) {
+      if (items.length >= size) break;
+      const occ = sentenceOf(w);
+      const can = chosen.filter((t) => occ || (t !== 'cloze' && t !== 'ctx'));
+      if (!can.length) continue;
+      const least = can.filter((t) => used[t] === Math.min(...can.map((x) => used[x])));
+      const type = least[Math.floor(Math.random() * least.length)];
+      used[type]++;
+      items.push({ w, type, occ });
+    }
+    if (!items.length) throw Object.assign(new Error('所选题型需要例句，但范围内的生词都没有包含该词的例句：请加选「看中文选单词」或「看单词选中文」'), { status: 400 });
+    const all = db.prepare('SELECT w.id, w.lemma, w.meaning, w.translation, w.synonyms, (SELECT surface FROM occurrences o WHERE o.word_id=w.id LIMIT 1) surface FROM words w').all();
     const sameCat = new Set(pool.map((w) => w.id));
     const quizId = tx(db, () => {
-      const qid = db.prepare('INSERT INTO quizzes(size,category,root,mode,total) VALUES(?,?,?,?,?)').run(size, category || null, root || null, mode, picked.length).lastInsertRowid;
-      picked.forEach((w, idx) => {
-        const occ = db.prepare("SELECT surface, sentence, sentence_translation FROM occurrences WHERE word_id=? AND sentence<>'' ORDER BY RANDOM() LIMIT 1").get(w.id);
-        const types = ['en2zh', 'zh2en'];
-        if (occ && occ.sentence && new RegExp(`\\b${occ.surface.replace(/[^A-Za-z'-]/g, '')}\\b`, 'i').test(occ.sentence)) types.push('cloze');
-        const type = types[Math.floor(Math.random() * types.length)];
+      const qid = db.prepare('INSERT INTO quizzes(size,category,root,mode,total,types) VALUES(?,?,?,?,?,?)').run(size, category || null, root || null, mode, items.length, chosen.join(',')).lastInsertRowid;
+      items.forEach(({ w, type, occ }, idx) => {
         const q = this.buildQuestion(w, type, occ, all, sameCat);
         db.prepare('INSERT INTO quiz_questions(quiz_id,idx,word_id,type,prompt,hint,options,answer) VALUES(?,?,?,?,?,?,?,?)')
           .run(qid, idx, w.id, type, q.prompt, q.hint, J.s(q.options), q.answer);
@@ -364,28 +404,43 @@ export class Service {
     return this.getQuiz(quizId, false);
   }
 
+  /** Two words mean the same (a shared Chinese sense, or listed as synonyms): either would be a right answer. */
+  sameMeaning(a, b) {
+    if (sharesSense(sensesOf(a), sensesOf(b))) return true;
+    const syn = (w) => J.p(w.synonyms, []).map((x) => String(x).toLowerCase());
+    return syn(a).includes(String(b.lemma).toLowerCase()) || syn(b).includes(String(a.lemma).toLowerCase());
+  }
+
+  /** The word's meaning in this sentence (saved with the occurrence), else its usual meaning. */
+  contextMeaning(w, occ) {
+    return String((occ && occ.meaning) || '').replace(/\s+/g, ' ').trim().slice(0, 48) || this.shortMeaning(w);
+  }
+
   buildQuestion(w, type, occ, all, prefer) {
-    const others = shuffle(all.filter((x) => x.id !== w.id && x.lemma !== w.lemma));
+    // distractors never mean the same as the answer, or the question would have two right options
+    const others = shuffle(all.filter((x) => x.id !== w.id && x.lemma !== w.lemma && !this.sameMeaning(w, x)));
     others.sort((a, b) => (prefer.has(b.id) ? 1 : 0) - (prefer.has(a.id) ? 1 : 0));
-    const pickTexts = (fn, correct) => {
-      const out = [], seen = new Set([correct.toLowerCase()]);
-      for (const o of others) { const t = fn(o); if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t); } if (out.length === 3) break; }
-      while (out.length < 3) { // top up from the offline dictionary
-        const lw = this.dictPool[Math.floor(Math.random() * this.dictPool.length)];
-        const t = fn({ lemma: lw, translation: (dict.words[lw] || [])[1] || '' });
-        if (t && !seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t); }
-      }
-      return out;
+    let prompt, hint = '', correct;
+    if (type === 'en2zh') { prompt = w.lemma; hint = w.phonetic ? `/${w.phonetic}/` : ''; correct = this.shortMeaning(w); }
+    else if (type === 'zh2en') { prompt = this.shortMeaning(w); correct = w.lemma; }
+    else if (type === 'ctx') { prompt = occ.sentence.replace(blankRe(occ.surface), (m) => `【${m}】`); correct = this.contextMeaning(w, occ); }
+    else { prompt = occ.sentence.replace(blankRe(occ.surface), '_____'); hint = occ.sentence_translation || ''; correct = occ.surface; }
+    const meaningOptions = type === 'en2zh' || type === 'ctx';
+    const text = meaningOptions ? (o) => this.shortMeaning(o) : type === 'cloze' ? (o) => o.surface || o.lemma : (o) => o.lemma;
+    const target = senses(`${correct} ${glossOf(w)}`);
+    const taken = new Set([correct.toLowerCase()]);
+    const distractors = [];
+    const offer = (o) => {
+      const t = text(o);
+      if (!t || taken.has(t.toLowerCase()) || (meaningOptions && sharesSense(senses(t), target))) return;
+      taken.add(t.toLowerCase());
+      distractors.push(t);
     };
-    let prompt, hint = '', correct, distractors;
-    if (type === 'en2zh') {
-      prompt = w.lemma; hint = w.phonetic ? `/${w.phonetic}/` : '';
-      correct = this.shortMeaning(w); distractors = pickTexts((o) => this.shortMeaning(o), correct);
-    } else if (type === 'zh2en') {
-      prompt = this.shortMeaning(w); correct = w.lemma; distractors = pickTexts((o) => o.lemma, correct);
-    } else {
-      const re = new RegExp(`\\b${occ.surface.replace(/[^A-Za-z'-]/g, '')}\\b`, 'i');
-      prompt = occ.sentence.replace(re, '_____'); hint = occ.sentence_translation || ''; correct = occ.surface; distractors = pickTexts((o) => o.lemma, correct);
+    for (const o of others) { if (distractors.length === 3) break; offer(o); }
+    for (let tries = 0; distractors.length < 3 && tries < 500; tries++) { // top up from the offline dictionary
+      const lw = this.dictPool[Math.floor(Math.random() * this.dictPool.length)];
+      const o = { lemma: lw, translation: (dict.words[lw] || [])[1] || '' };
+      if (lw !== w.lemma && !this.sameMeaning(w, o)) offer(o);
     }
     const options = shuffle([correct, ...distractors]);
     return { prompt, hint, options, answer: options.indexOf(correct) };

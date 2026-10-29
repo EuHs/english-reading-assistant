@@ -224,7 +224,8 @@ ERA.UI = {
     if (r.right > innerWidth - 8) card.style.left = Math.max(8, innerWidth - r.width - 8) + 'px';
   },
 
-  card(title, bodyHtml, { cls = '', fixed = false } = {}) {
+  /** `dismiss`: a press anywhere outside the card closes it, like a popover (the vocab book panel). */
+  card(title, bodyHtml, { cls = '', fixed = false, dismiss = false } = {}) {
     this.mount();
     this.closeCards(true);
     const card = this.h(`<div class="card ${cls} ${fixed ? 'fixed' : ''}"><div class="hd"><span class="t">${this.esc(title)}</span><button class="x" title="关闭">×</button></div><div class="bd">${bodyHtml}</div></div>`);
@@ -238,6 +239,16 @@ ERA.UI = {
     const tb = this.wrap.querySelector('.tb');
     if (tb) tb.classList.remove('nocard');
     this.makeDraggable(card);
+    if (dismiss) {
+      // by position: the UI's shadow root hides the card from the page's event path
+      const outside = (e) => {
+        const r = card.getBoundingClientRect();
+        if (card.isConnected && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+        document.removeEventListener('pointerdown', outside, true);
+        card.remove();
+      };
+      setTimeout(() => card.isConnected && document.addEventListener('pointerdown', outside, true), 0); // not the press that opened it
+    }
     card.addEventListener('click', (e) => {
       const sp = e.target.closest('[data-speak]');
       if (sp) ERA.speak(sp.dataset.speak).catch((err) => this.toast(err.message));

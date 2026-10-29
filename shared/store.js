@@ -19,7 +19,7 @@ ERA.Store = {
       word: e.word || payload.word, phonetic: payload.phonetic || e.phonetic, translation: payload.translation || e.translation,
       meaning: payload.meaning || e.meaning, pos: payload.pos || e.pos, morphology: payload.morphology || e.morphology,
       roots: payload.roots && payload.roots.length ? payload.roots : e.roots, forms: payload.forms || e.forms, tenses: payload.tenses || e.tenses,
-      etymology: payload.etymology || e.etymology,
+      etymology: payload.etymology || e.etymology, synonyms: payload.synonyms && payload.synonyms.length ? payload.synonyms : e.synonyms,
     });
     const same = e.occurrences.find((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url);
     if (!same) e.occurrences.push(occ);
@@ -141,7 +141,7 @@ ERA.Store = {
     const items = [];
     for (const e of await this.words()) {
       const base = { word: e.word || e.lemma, lemma: e.lemma, phonetic: e.phonetic, translation: e.translation, meaning: e.meaning, pos: e.pos,
-        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology };
+        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology, synonyms: e.synonyms };
       for (const o of e.occurrences && e.occurrences.length ? e.occurrences : [{}]) {
         items.push({ ...base, word: o.surface || base.word, sentence: o.sentence, sentence_translation: o.sentence_translation, article: o.article });
       }
@@ -170,9 +170,9 @@ ERA.Store = {
   /** One line for any of the sync buttons. */
   syncMessage(r) {
     if (r.reason === 'server-disabled') return '请先在设置里启用服务器并填写地址';
-    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待同步的修改` : '');
-    if (r.synced) return `✓ 已同步${what}。服务器上已有的会合并，不会重复`;
-    return `⚠ ${r.failed + r.pending} 项没有同步成功（${r.error}）；已同步${what}`;
+    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待上传的修改` : '');
+    if (r.synced) return `✓ 已上传本机的${what}。服务器上已有的会合并，不会重复；复习全部生词请到服务器网页`;
+    return `⚠ ${r.failed + r.pending} 项没有上传成功（${r.error}）；已上传${what}`;
   },
 
   async exportAll() {

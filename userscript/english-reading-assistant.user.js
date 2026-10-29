@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.7.0
+// @version      1.8.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -29,7 +29,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.7.0';
+ERA.VERSION = '1.8.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -978,7 +978,7 @@ ERA.Store = {
       word: e.word || payload.word, phonetic: payload.phonetic || e.phonetic, translation: payload.translation || e.translation,
       meaning: payload.meaning || e.meaning, pos: payload.pos || e.pos, morphology: payload.morphology || e.morphology,
       roots: payload.roots && payload.roots.length ? payload.roots : e.roots, forms: payload.forms || e.forms, tenses: payload.tenses || e.tenses,
-      etymology: payload.etymology || e.etymology,
+      etymology: payload.etymology || e.etymology, synonyms: payload.synonyms && payload.synonyms.length ? payload.synonyms : e.synonyms,
     });
     const same = e.occurrences.find((o) => o.sentence === occ.sentence && o.article && occ.article && o.article.url === occ.article.url);
     if (!same) e.occurrences.push(occ);
@@ -1100,7 +1100,7 @@ ERA.Store = {
     const items = [];
     for (const e of await this.words()) {
       const base = { word: e.word || e.lemma, lemma: e.lemma, phonetic: e.phonetic, translation: e.translation, meaning: e.meaning, pos: e.pos,
-        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology };
+        morphology: e.morphology, roots: e.roots, forms: e.forms, tenses: e.tenses, etymology: e.etymology, synonyms: e.synonyms };
       for (const o of e.occurrences && e.occurrences.length ? e.occurrences : [{}]) {
         items.push({ ...base, word: o.surface || base.word, sentence: o.sentence, sentence_translation: o.sentence_translation, article: o.article });
       }
@@ -1129,9 +1129,9 @@ ERA.Store = {
   /** One line for any of the sync buttons. */
   syncMessage(r) {
     if (r.reason === 'server-disabled') return '请先在设置里启用服务器并填写地址';
-    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待同步的修改` : '');
-    if (r.synced) return `✓ 已同步${what}。服务器上已有的会合并，不会重复`;
-    return `⚠ ${r.failed + r.pending} 项没有同步成功（${r.error}）；已同步${what}`;
+    const what = `生词 ${r.words} 个${r.newWords ? `（服务器新增 ${r.newWords}）` : ''}、好词好句 ${r.phrases} 条` + (r.queued ? `，另处理了 ${r.queued} 项待上传的修改` : '');
+    if (r.synced) return `✓ 已上传本机的${what}。服务器上已有的会合并，不会重复；复习全部生词请到服务器网页`;
+    return `⚠ ${r.failed + r.pending} 项没有上传成功（${r.error}）；已上传${what}`;
   },
 
   async exportAll() {
@@ -1395,7 +1395,8 @@ ERA.UI = {
     if (r.right > innerWidth - 8) card.style.left = Math.max(8, innerWidth - r.width - 8) + 'px';
   },
 
-  card(title, bodyHtml, { cls = '', fixed = false } = {}) {
+  /** `dismiss`: a press anywhere outside the card closes it, like a popover (the vocab book panel). */
+  card(title, bodyHtml, { cls = '', fixed = false, dismiss = false } = {}) {
     this.mount();
     this.closeCards(true);
     const card = this.h(`<div class="card ${cls} ${fixed ? 'fixed' : ''}"><div class="hd"><span class="t">${this.esc(title)}</span><button class="x" title="关闭">×</button></div><div class="bd">${bodyHtml}</div></div>`);
@@ -1409,6 +1410,16 @@ ERA.UI = {
     const tb = this.wrap.querySelector('.tb');
     if (tb) tb.classList.remove('nocard');
     this.makeDraggable(card);
+    if (dismiss) {
+      // by position: the UI's shadow root hides the card from the page's event path
+      const outside = (e) => {
+        const r = card.getBoundingClientRect();
+        if (card.isConnected && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return;
+        document.removeEventListener('pointerdown', outside, true);
+        card.remove();
+      };
+      setTimeout(() => card.isConnected && document.addEventListener('pointerdown', outside, true), 0); // not the press that opened it
+    }
     card.addEventListener('click', (e) => {
       const sp = e.target.closest('[data-speak]');
       if (sp) ERA.speak(sp.dataset.speak).catch((err) => this.toast(err.message));
@@ -1982,7 +1993,7 @@ ERA.Actions = {
       translation: d.translation || (a.definitions || []).join('\n'), meaning: a.meaning || (tr && tr.translation) || '',
       definitions: a.definitions || [], morphology: a.morphology && a.morphology.length ? a.morphology : d.roots || [],
       roots: a.roots && a.roots.length ? a.roots : (d.roots || []).filter((r) => r.type === 'root').map((r) => r.part),
-      forms: a.forms || null, tenses: a.tenses || [], etymology: a.etymology || '',
+      forms: a.forms || null, tenses: a.tenses || [], etymology: a.etymology || '', synonyms: a.synonyms || [],
       sentence, sentence_translation: (tr && tr.sentence_translation) || '',
       article: { ...meta, category: cat || undefined }, source: ERA.P.name || 'extension',
     };
@@ -2104,28 +2115,43 @@ ERA.highlightWord = function (sentence, word) {
   return esc.replace(re, '<span class="mark">$1</span>');
 };
 
-/* ---------- Vocab book panel (used by userscript / viewer) ---------- */
+/* ---------- This article's vocab book (userscript / extension / PDF viewer) ----------
+ * Only what was marked in the article being read, to review it while reading; the whole book is reviewed in the
+ * server's web app. × cancels the entry for this article only, like un-starring it. */
 ERA.UI.showBook = async function (tab = 'words') {
   const UI = this;
-  const words = await ERA.Store.words();
-  const phrases = await ERA.Store.phrases();
+  const url = ERA.Actions.articleUrl();
+  const here = (a) => !!a && a.url === url;
+  const words = (await ERA.Store.words()).filter((w) => (w.occurrences || []).some((o) => here(o.article)));
+  const phrases = (await ERA.Store.phrases()).filter((p) => here(p.article));
   const q = (await ERA.P.getData('syncQueue', [])) || [];
+  const cfg = await ERA.P.getConfig();
+  const web = cfg.server.enabled && cfg.server.baseUrl ? cfg.server.baseUrl.replace(/\/+$/, '') + '/#/words' : '';
+  const title = String((ERA.pageMetaOverride && ERA.pageMetaOverride.title) || document.title || '').slice(0, 80);
+  // one book panel: re-rendering (tabs, ×, upload) replaces it — panels are kept by closeCards, so they used to stack
+  if (UI.wrap) UI.wrap.querySelectorAll('.card.book').forEach((c) => c.remove());
   const list = tab === 'words'
-    ? words.map((w) => `<div class="item"><b>${UI.esc(w.word)}</b>${UI.spk(w.word)} <span class="ph">${w.phonetic ? '/' + UI.esc(w.phonetic) + '/' : ''}</span> <button class="x" data-del="${w.id}" style="float:right">×</button>
+    ? words.map((w) => `<div class="item"><b>${UI.esc(w.word)}</b>${UI.spk(w.word)} <span class="ph">${w.phonetic ? '/' + UI.esc(w.phonetic) + '/' : ''}</span> <button class="x" data-del="${UI.esc(w.lemma)}" title="从本文生词本取消" style="float:right">×</button>
         <div class="tr">${UI.esc((w.meaning || w.translation || '').slice(0, 120))}</div>
         ${(w.roots || []).length ? `<div class="muted">词根：${w.roots.map(UI.esc).join(', ')}</div>` : ''}
-        ${(w.occurrences || []).slice(-2).map((o) => `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div><div class="meta">— ${UI.esc((o.article || {}).title || '')}</div>`).join('')}</div>`).join('')
-    : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${p.id}" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div><div class="meta">— ${UI.esc((p.article || {}).title || '')}</div></div>`).join('');
-  const card = UI.card('我的生词本', `
-    <div class="btns" style="margin-top:0"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
-    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
-    <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
+        ${w.occurrences.filter((o) => here(o.article)).map((o) => `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div>${o.sentence_translation ? `<div class="meta">${UI.esc(o.sentence_translation)}</div>` : ''}`).join('')}</div>`).join('')
+    : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${UI.esc(p.text)}" title="从本文好词好句取消" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div>
+        ${p.kind !== 'sentence' && p.sentence ? `<div class="sentence">${ERA.highlightWord(p.sentence, p.text)}</div>` : ''}</div>`).join('');
+  const card = UI.card('本文生词本', `
+    <div class="muted">${UI.esc(title)}</div>
+    <div class="btns"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
+    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">上传到服务器${q.length ? '（待上传 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出本文</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
+    <div class="muted">只列这篇文章里标记的内容，边读边复习；${web ? `复习全部生词请到<a href="${UI.esc(web)}" target="_blank" rel="noopener">服务器网页 ↗</a>` : '复习全部生词：启用服务器后到网页端'}</div>
+    <div style="margin-top:8px">${list || `<div class="muted">这篇文章还没有${tab === 'words' ? '生词' : '好词好句'}：选中文字后点「☆生词」或「★好句」。</div>`}</div>`, { fixed: true, cls: 'gpanel book', dismiss: true });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
-  card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
-  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('同步中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
+  card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
+    await (tab === 'words' ? ERA.Actions.cancelVocab(b.dataset.del) : ERA.Actions.cancelPhrase(b.dataset.del));
+    UI.showBook(tab);
+  }));
+  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('上传中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
   card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
-  card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
-  card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');
+  card.querySelector('[data-x=json]').onclick = () => ERA.download('era-article-book.json', JSON.stringify({ type: 'era-book', article: { url, title }, exportedAt: new Date().toISOString(), words, phrases }, null, 2), 'application/json');
+  card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-article-vocab.csv', ERA.Store.toCSV(words.map((w) => ({ ...w, occurrences: w.occurrences.filter((o) => here(o.article)) }))), 'text/csv');
 };
 
 /** Show or hide the 生词 / 好词好句 marks (the saved entries are untouched). */
@@ -2627,12 +2653,12 @@ function decoratePdfLinks(root) {
 /* ---------- menu: script-manager menu and/or a floating button ---------- */
 const MENU = [
   ['⚙️ 设置（AI / 服务器 / 导入导出）', () => ERA.Settings.openPanel()],
-  ['📒 生词本 / 好词好句', () => ERA.UI.showBook()],
+  ['📒 本文生词本', () => ERA.UI.showBook()],
   ['📂 打开本地 PDF', pickLocalPdf],
   ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
   ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
   ['📥 下载离线词典', downloadDictNow],
-  ['🔄 同步到服务器', async () => { ERA.UI.toast('同步中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
+  ['🔄 上传到服务器', async () => { ERA.UI.toast('上传中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
 ];
 const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');
 

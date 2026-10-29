@@ -242,12 +242,12 @@ function decoratePdfLinks(root) {
 /* ---------- menu: script-manager menu and/or a floating button ---------- */
 const MENU = [
   ['⚙️ 设置（AI / 服务器 / 导入导出）', () => ERA.Settings.openPanel()],
-  ['📒 生词本 / 好词好句', () => ERA.UI.showBook()],
+  ['📒 本文生词本', () => ERA.UI.showBook()],
   ['📂 打开本地 PDF', pickLocalPdf],
   ['📄 用阅读器打开 PDF 链接', () => { const u = prompt('PDF 链接：', /\.pdf/i.test(location.href) ? location.href : ''); if (u) openPdfOverlay(u); }],
   ['👁 显示 / 隐藏生词标记', () => ERA.toggleBookMarks()],
   ['📥 下载离线词典', downloadDictNow],
-  ['🔄 同步到服务器', async () => { ERA.UI.toast('同步中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
+  ['🔄 上传到服务器', async () => { ERA.UI.toast('上传中…'); ERA.UI.toast(ERA.Store.syncMessage(await ERA.Store.syncAll()), 6000); }],
 ];
 const hasMenuApi = typeof GM_registerMenuCommand === 'function' || (typeof GM !== 'undefined' && typeof GM.registerMenuCommand === 'function');
 

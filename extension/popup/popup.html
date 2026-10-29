@@ -3,15 +3,16 @@
 <style>body{width:300px;padding:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}.grid .btn{text-align:center}.stat{display:flex;gap:10px;margin:6px 0}.stat b{font-size:20px;color:var(--acc)}</style></head>
 <body>
 <b>📖 英语阅读助手</b>
-<div class="stat"><div><b id="nw">0</b><div class="muted">生词</div></div><div><b id="np">0</b><div class="muted">好词好句</div></div><div><b id="nq">0</b><div class="muted">待同步</div></div></div>
+<div class="stat"><div><b id="nw">0</b><div class="muted">本机生词</div></div><div><b id="np">0</b><div class="muted">本机好词好句</div></div><div><b id="nq">0</b><div class="muted">待上传</div></div></div>
 <div class="grid">
   <button class="btn" id="pdfCur">阅读器打开当前 PDF</button>
   <button class="btn gh" id="pdfLocal">打开本地 PDF</button>
-  <button class="btn gh" id="book">生词本</button>
-  <button class="btn gh" id="sync">同步服务器</button>
-  <button class="btn gh" id="web">打开网页端</button>
+  <button class="btn gh" id="book">本文生词本</button>
+  <button class="btn gh" id="sync">上传到服务器</button>
+  <button class="btn gh" id="web">网页端复习</button>
   <button class="btn gh" id="opt">设置</button>
 </div>
+<div class="muted" style="margin-top:8px"><a href="#" id="all">本机全部记录（导出 / 备份）</a></div>
 <div class="muted" id="msg" style="margin-top:8px"></div>
 <script src="../shared/config.js"></script>
 <script src="../shared/dict.js"></script>

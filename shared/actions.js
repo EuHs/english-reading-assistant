@@ -258,7 +258,7 @@ ERA.Actions = {
       translation: d.translation || (a.definitions || []).join('\n'), meaning: a.meaning || (tr && tr.translation) || '',
       definitions: a.definitions || [], morphology: a.morphology && a.morphology.length ? a.morphology : d.roots || [],
       roots: a.roots && a.roots.length ? a.roots : (d.roots || []).filter((r) => r.type === 'root').map((r) => r.part),
-      forms: a.forms || null, tenses: a.tenses || [], etymology: a.etymology || '',
+      forms: a.forms || null, tenses: a.tenses || [], etymology: a.etymology || '', synonyms: a.synonyms || [],
       sentence, sentence_translation: (tr && tr.sentence_translation) || '',
       article: { ...meta, category: cat || undefined }, source: ERA.P.name || 'extension',
     };
@@ -380,28 +380,43 @@ ERA.highlightWord = function (sentence, word) {
   return esc.replace(re, '<span class="mark">$1</span>');
 };
 
-/* ---------- Vocab book panel (used by userscript / viewer) ---------- */
+/* ---------- This article's vocab book (userscript / extension / PDF viewer) ----------
+ * Only what was marked in the article being read, to review it while reading; the whole book is reviewed in the
+ * server's web app. × cancels the entry for this article only, like un-starring it. */
 ERA.UI.showBook = async function (tab = 'words') {
   const UI = this;
-  const words = await ERA.Store.words();
-  const phrases = await ERA.Store.phrases();
+  const url = ERA.Actions.articleUrl();
+  const here = (a) => !!a && a.url === url;
+  const words = (await ERA.Store.words()).filter((w) => (w.occurrences || []).some((o) => here(o.article)));
+  const phrases = (await ERA.Store.phrases()).filter((p) => here(p.article));
   const q = (await ERA.P.getData('syncQueue', [])) || [];
+  const cfg = await ERA.P.getConfig();
+  const web = cfg.server.enabled && cfg.server.baseUrl ? cfg.server.baseUrl.replace(/\/+$/, '') + '/#/words' : '';
+  const title = String((ERA.pageMetaOverride && ERA.pageMetaOverride.title) || document.title || '').slice(0, 80);
+  // one book panel: re-rendering (tabs, ×, upload) replaces it — panels are kept by closeCards, so they used to stack
+  if (UI.wrap) UI.wrap.querySelectorAll('.card.book').forEach((c) => c.remove());
   const list = tab === 'words'
-    ? words.map((w) => `<div class="item"><b>${UI.esc(w.word)}</b>${UI.spk(w.word)} <span class="ph">${w.phonetic ? '/' + UI.esc(w.phonetic) + '/' : ''}</span> <button class="x" data-del="${w.id}" style="float:right">×</button>
+    ? words.map((w) => `<div class="item"><b>${UI.esc(w.word)}</b>${UI.spk(w.word)} <span class="ph">${w.phonetic ? '/' + UI.esc(w.phonetic) + '/' : ''}</span> <button class="x" data-del="${UI.esc(w.lemma)}" title="从本文生词本取消" style="float:right">×</button>
         <div class="tr">${UI.esc((w.meaning || w.translation || '').slice(0, 120))}</div>
         ${(w.roots || []).length ? `<div class="muted">词根：${w.roots.map(UI.esc).join(', ')}</div>` : ''}
-        ${(w.occurrences || []).slice(-2).map((o) => `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div><div class="meta">— ${UI.esc((o.article || {}).title || '')}</div>`).join('')}</div>`).join('')
-    : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${p.id}" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div><div class="meta">— ${UI.esc((p.article || {}).title || '')}</div></div>`).join('');
-  const card = UI.card('我的生词本', `
-    <div class="btns" style="margin-top:0"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
-    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">同步服务器${q.length ? '（待同步 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出 JSON</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
-    <div style="margin-top:8px">${list || '<div class="muted">暂无内容</div>'}</div>`, { fixed: true, cls: 'gpanel' });
+        ${w.occurrences.filter((o) => here(o.article)).map((o) => `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div>${o.sentence_translation ? `<div class="meta">${UI.esc(o.sentence_translation)}</div>` : ''}`).join('')}</div>`).join('')
+    : phrases.map((p) => `<div class="item"><b>${UI.esc(p.text)}</b>${UI.spk(p.text)} <button class="x" data-del="${UI.esc(p.text)}" title="从本文好词好句取消" style="float:right">×</button><div class="tr">${UI.esc(p.translation)}</div>
+        ${p.kind !== 'sentence' && p.sentence ? `<div class="sentence">${ERA.highlightWord(p.sentence, p.text)}</div>` : ''}</div>`).join('');
+  const card = UI.card('本文生词本', `
+    <div class="muted">${UI.esc(title)}</div>
+    <div class="btns"><button class="btn ${tab === 'words' ? '' : 'gh'}" data-tab="words">生词 ${words.length}</button><button class="btn ${tab === 'phrases' ? '' : 'gh'}" data-tab="phrases">好词好句 ${phrases.length}</button></div>
+    <div class="btns"><button class="btn gh" data-x="marks">${document.documentElement.classList.contains('era-hide-book') ? '显示' : '隐藏'}原文标记</button><button class="btn gh" data-x="sync">上传到服务器${q.length ? '（待上传 ' + q.length + '）' : ''}</button><button class="btn gh" data-x="json">导出本文</button><button class="btn gh" data-x="csv">导出 CSV</button></div>
+    <div class="muted">只列这篇文章里标记的内容，边读边复习；${web ? `复习全部生词请到<a href="${UI.esc(web)}" target="_blank" rel="noopener">服务器网页 ↗</a>` : '复习全部生词：启用服务器后到网页端'}</div>
+    <div style="margin-top:8px">${list || `<div class="muted">这篇文章还没有${tab === 'words' ? '生词' : '好词好句'}：选中文字后点「☆生词」或「★好句」。</div>`}</div>`, { fixed: true, cls: 'gpanel book', dismiss: true });
   card.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => UI.showBook(b.dataset.tab)));
-  card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => { await (tab === 'words' ? ERA.Store.removeWord(b.dataset.del) : ERA.Store.removePhrase(b.dataset.del)); UI.showBook(tab); }));
-  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('同步中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
+  card.querySelectorAll('[data-del]').forEach((b) => (b.onclick = async () => {
+    await (tab === 'words' ? ERA.Actions.cancelVocab(b.dataset.del) : ERA.Actions.cancelPhrase(b.dataset.del));
+    UI.showBook(tab);
+  }));
+  card.querySelector('[data-x=sync]').onclick = async () => { UI.toast('上传中…'); const r = await ERA.Store.syncAll(); UI.toast(ERA.Store.syncMessage(r), 6000); UI.showBook(tab); };
   card.querySelector('[data-x=marks]').onclick = async () => { await ERA.toggleBookMarks(); UI.showBook(tab); };
-  card.querySelector('[data-x=json]').onclick = async () => ERA.download('era-book.json', await ERA.Store.exportAll(), 'application/json');
-  card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-vocab.csv', ERA.Store.toCSV(words), 'text/csv');
+  card.querySelector('[data-x=json]').onclick = () => ERA.download('era-article-book.json', JSON.stringify({ type: 'era-book', article: { url, title }, exportedAt: new Date().toISOString(), words, phrases }, null, 2), 'application/json');
+  card.querySelector('[data-x=csv]').onclick = () => ERA.download('era-article-vocab.csv', ERA.Store.toCSV(words.map((w) => ({ ...w, occurrences: w.occurrences.filter((o) => here(o.article)) }))), 'text/csv');
 };
 
 /** Show or hide the 生词 / 好词好句 marks (the saved entries are untouched). */
