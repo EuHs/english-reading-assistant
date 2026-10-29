@@ -2,7 +2,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.6.0';
+ERA.VERSION = '1.7.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 

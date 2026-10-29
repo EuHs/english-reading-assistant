@@ -52,14 +52,17 @@ export function guessCategory(text) {
 export class AIClient {
   constructor(getSettings) { this.getSettings = getSettings; }
 
-  get configured() { const s = this.getSettings(); return !!(s.ai_base_url && s.ai_api_key); }
+  get configured() { return ERA.profileReady(this.profile()); }
 
   /** The server's AI settings as a profile for the shared request builder (same parameters as the extension). */
   profile(model) {
     const s = this.getSettings();
-    let modelInfo = null;
+    let modelInfo = null, headers = {};
     try { modelInfo = s.ai_model_info ? JSON.parse(s.ai_model_info) : null; } catch { /* ignore */ }
+    try { headers = s.ai_headers ? JSON.parse(s.ai_headers) : {}; } catch { /* validated on save */ }
     return {
+      type: s.ai_type === 'relay' ? 'relay' : 'openai', headers,
+      relay: { url: s.ai_relay_url, mode: s.ai_relay_mode, targetHeader: s.ai_relay_target_header, relayKey: s.ai_relay_key },
       baseUrl: s.ai_base_url, apiKey: s.ai_api_key, model: model || s.ai_model, temperature: s.ai_temperature, topP: s.ai_top_p,
       maxTokens: s.ai_max_tokens, reasoning: s.ai_reasoning, reasoningFormat: s.ai_reasoning_format, extra: s.ai_extra, modelInfo,
     };
@@ -67,7 +70,7 @@ export class AIClient {
 
   /** Chat completion; a 400 about a parameter is adapted to and retried (ERA.aiSend). `withNotes` also returns what changed. */
   async chat(messages, { model, json = false, timeout = 150000, withNotes = false, fresh = false } = {}) {
-    if (!this.configured) throw new Error('服务器未配置 AI（AI_BASE_URL / AI_API_KEY）');
+    if (!this.configured) throw new Error('服务器未配置 AI：在网页「设置 → 服务器 AI」里填写接口地址和 Key，或跳板地址');
     const req = ERA.buildAIRequest(this.profile(model), messages);
     const send = async (body) => {
       const ctrl = new AbortController();
@@ -87,8 +90,8 @@ export class AIClient {
 
   /** Pull the model list from the upstream server: { ids, info } (info: parameters some providers list per model). */
   async models() {
-    const s = this.getSettings();
-    const res = await fetch(s.ai_base_url.replace(/\/+$/, '') + '/models', { headers: { Authorization: 'Bearer ' + s.ai_api_key } });
+    const { url, headers } = ERA.buildModelsRequest(this.profile());
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(30000) });
     if (!res.ok) throw new Error(`拉取模型失败 ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return ERA.parseModelList(await res.json());
   }

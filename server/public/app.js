@@ -470,8 +470,19 @@
         <div class="bar"><button class="btn gh" id="extcfg">生成扩展 / 油猴脚本配置文件</button><span class="muted">导入到扩展或油猴脚本的“设置 → 导入”，自动填好服务器地址与 Token，并使用服务器 AI。</span></div>
         <div class="muted" id="m2"></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">服务器 AI（上游）</h3>
-        <div class="row"><label>Base URL</label><input type="text" id="base" value="${esc(s.ai_base_url)}" placeholder="https://api.z.ai/api/coding/paas/v4"></div>
-        <div class="row"><label>API Key</label><input type="password" id="key" value="${esc(s.ai_api_key)}" placeholder="留空不修改"></div>
+        <div class="row"><label>类型</label><select id="atype"><option value="openai">直连 OpenAI 兼容接口（OpenAI / DeepSeek / 智谱 / 通义 / Ollama …）</option>
+          <option value="relay" ${s.ai_type === 'relay' ? 'selected' : ''}>经过跳板（one-api / new-api / LiteLLM / 自建转发）</option></select></div>
+        <div class="row"><label>上游 Base URL</label><input type="text" id="base" value="${esc(s.ai_base_url)}" placeholder="https://api.z.ai/api/coding/paas/v4"></div>
+        <div class="row"><label>上游 API Key</label><input type="password" id="key" value="${esc(s.ai_api_key)}" placeholder="留空不修改"></div>
+        <div id="relaybox">
+          <div class="muted">OpenAI 兼容模式：请求发到跳板的 /chat/completions，由跳板连上游（上游地址可留空，有跳板密钥时用它代替 API Key）；转发模式：请求 POST 到跳板，真实上游地址放在下面的请求头里，跳板密钥放在 X-Relay-Key。</div>
+          <div class="row"><label>跳板地址</label><input type="text" id="rurl" value="${esc(s.ai_relay_url)}" placeholder="http://127.0.0.1:3000/v1"></div>
+          <div class="row"><label>跳板模式</label><select id="rmode"><option value="openai">OpenAI 兼容：跳板自身提供 /chat/completions</option>
+            <option value="forward" ${s.ai_relay_mode === 'forward' ? 'selected' : ''}>转发：POST 到跳板，上游地址放在请求头</option></select></div>
+          <div class="row"><label>上游地址请求头</label><input type="text" id="rhdr" value="${esc(s.ai_relay_target_header)}" placeholder="X-Target-URL"></div>
+          <div class="row"><label>跳板密钥</label><input type="password" id="rkey" value="${esc(s.ai_relay_key)}" placeholder="可空；留空不修改"></div>
+        </div>
+        <div class="row"><label>附加请求头 JSON</label><input type="text" id="hdrs" value="${esc(s.ai_headers)}" placeholder='可空，如 {"X-Channel":"zhipu"}'></div>
         <div class="row"><label>模型</label><input type="text" id="model" value="${esc(s.ai_model)}" list="models"><datalist id="models"></datalist><button class="btn gh" id="pull">从上游拉取模型</button></div>
         <div class="muted">下面的参数留空 = 不发送，用模型默认；服务器会按供应商的写法发送，模型报错时自动调整后重试。</div>
         <div class="row"><label>温度 / top_p</label><input type="text" id="temp" value="${esc(s.ai_temperature)}" placeholder="默认"><input type="text" id="topp" value="${esc(s.ai_top_p)}" placeholder="默认"></div>
@@ -525,8 +536,12 @@
       }
       showInfo();
     };
+    const showType = () => (document.getElementById('relaybox').hidden = v('atype') !== 'relay');
+    showType();
+    document.getElementById('atype').onchange = showType;
     const body = () => ({
-      ai_base_url: v('base'), ai_api_key: v('key'), ai_model: v('model'), ai_extra: v('extra'), ai_temperature: v('temp'), ai_top_p: v('topp'),
+      ai_type: v('atype'), ai_base_url: v('base'), ai_api_key: v('key'), ai_relay_url: v('rurl'), ai_relay_mode: v('rmode'), ai_relay_target_header: v('rhdr') || 'X-Target-URL',
+      ai_relay_key: v('rkey'), ai_headers: v('hdrs'), ai_model: v('model'), ai_extra: v('extra'), ai_temperature: v('temp'), ai_top_p: v('topp'),
       ai_max_tokens: v('maxtok'), ai_reasoning: v('effort'), ai_reasoning_format: v('rfmt'), ai_model_info: models[v('model')] ? JSON.stringify(models[v('model')]) : '',
     });
     document.getElementById('save').onclick = async () => { try { await api('PUT', '/api/settings', body()); m1('已保存 ✓'); } catch (e) { m1('✗ ' + e.message); } };

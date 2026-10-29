@@ -19,7 +19,9 @@ const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf
 const db = openDb(path.join(DATA, 'era.db'));
 
 /* ---------- settings: env defaults, overridable from the web app (stored in DB) ---------- */
-const AI_KEYS = ['ai_base_url', 'ai_api_key', 'ai_model', 'ai_extra', 'ai_temperature', 'ai_top_p', 'ai_max_tokens', 'ai_reasoning', 'ai_reasoning_format', 'ai_model_info'];
+const AI_KEYS = ['ai_base_url', 'ai_api_key', 'ai_model', 'ai_extra', 'ai_temperature', 'ai_top_p', 'ai_max_tokens', 'ai_reasoning', 'ai_reasoning_format', 'ai_model_info',
+  'ai_type', 'ai_headers', 'ai_relay_url', 'ai_relay_mode', 'ai_relay_target_header', 'ai_relay_key'];
+const SECRET_KEYS = ['ai_api_key', 'ai_relay_key']; // masked when read, and a masked value echoed back is not saved
 function settings() {
   const rows = Object.fromEntries(db.prepare('SELECT key, value FROM settings').all().map((r) => [r.key, r.value]));
   return {
@@ -34,6 +36,13 @@ function settings() {
     ai_reasoning: rows.ai_reasoning ?? env.AI_REASONING ?? '',
     ai_reasoning_format: rows.ai_reasoning_format ?? env.AI_REASONING_FORMAT ?? 'auto',
     ai_model_info: rows.ai_model_info ?? '', // what the provider's /models said about the chosen model
+    // direct, or through a relay (one-api / new-api / LiteLLM / a forwarder) — the same structure as the extension's 跳板
+    ai_type: rows.ai_type ?? env.AI_TYPE ?? 'openai',
+    ai_headers: rows.ai_headers ?? env.AI_HEADERS ?? '',
+    ai_relay_url: rows.ai_relay_url ?? env.AI_RELAY_URL ?? '',
+    ai_relay_mode: rows.ai_relay_mode ?? env.AI_RELAY_MODE ?? 'openai',
+    ai_relay_target_header: rows.ai_relay_target_header ?? env.AI_RELAY_TARGET_HEADER ?? 'X-Target-URL',
+    ai_relay_key: rows.ai_relay_key ?? env.AI_RELAY_KEY ?? '',
     tts_voice: rows.tts_voice ?? env.TTS_VOICE ?? 'af_heart',
   };
 }
@@ -223,7 +232,7 @@ api.put('/settings/api-token', adminOnly, wrap((req) => {
 }));
 
 /* server settings (AI upstream), import / export: admin only, they hold the AI key */
-api.get('/settings', adminOnly, wrap(() => { const s = settings(); return { ...s, ai_api_key: mask(s.ai_api_key), categories: CATEGORIES, voices: VOICES }; }));
+api.get('/settings', adminOnly, wrap(() => ({ ...masked(settings()), categories: CATEGORIES, voices: VOICES })));
 function checkSetting(k, v) {
   const bad = (msg) => Object.assign(new Error(msg), { status: 400 });
   if (!v) return;
@@ -232,21 +241,32 @@ function checkSetting(k, v) {
   if (k === 'ai_reasoning_format' && !ERA.REASONING_FORMATS[v]) throw bad('不认识的思考参数写法：' + v);
   if (k === 'ai_extra') try { ERA.parseExtra(v); } catch (e) { throw bad(e.message); }
   if (k === 'ai_model_info') try { JSON.parse(v); } catch { throw bad('模型信息不是合法 JSON'); }
+  if (k === 'ai_type' && !['openai', 'relay'].includes(v)) throw bad('类型只能是 openai 或 relay');
+  if (k === 'ai_relay_mode' && !['openai', 'forward'].includes(v)) throw bad('跳板模式只能是 openai 或 forward');
+  if (k === 'ai_relay_url' && !/^https?:\/\/\S+$/i.test(v)) throw bad('跳板地址要以 http:// 或 https:// 开头');
+  if (k === 'ai_relay_target_header' && !/^[A-Za-z0-9-]+$/.test(v)) throw bad('上游地址请求头只能用字母、数字和 -');
+  if (k === 'ai_headers') {
+    let o;
+    try { o = JSON.parse(v); } catch { throw bad('附加请求头不是合法 JSON'); }
+    if (!o || typeof o !== 'object' || Array.isArray(o) || Object.values(o).some((x) => typeof x !== 'string')) throw bad('附加请求头应为 {"名称":"值"} 形式的 JSON');
+  }
 }
+const masked = (s) => ({ ...s, ...Object.fromEntries(SECRET_KEYS.map((k) => [k, mask(s[k])])) });
 api.put('/settings', adminOnly, wrap((req) => {
   const changes = [...AI_KEYS, 'tts_voice'].map((k) => [k, req.body[k]])
-    .filter(([k, v]) => typeof v === 'string' && !(k === 'ai_api_key' && v.includes('****'))) // a masked key is echoed back
+    .filter(([k, v]) => typeof v === 'string' && !(SECRET_KEYS.includes(k) && v.includes('****'))) // a masked key is echoed back
     .map(([k, v]) => [k, v.trim()]);
   changes.forEach(([k, v]) => checkSetting(k, v)); // all valid before anything is saved
   changes.forEach(([k, v]) => saveSetting(k, v));
-  const s = settings();
-  return { ...s, ai_api_key: mask(s.ai_api_key) };
+  return masked(settings());
 }));
 api.get('/settings/export', adminOnly, wrap((req) => {
   const s = settings();
   const withKey = req.query.secrets === '1';
   return { type: 'era-server-config', version: 1, exportedAt: new Date().toISOString(), ai: { base_url: s.ai_base_url, api_key: withKey ? s.ai_api_key : '', model: s.ai_model, extra: s.ai_extra,
-    params: { temperature: s.ai_temperature, top_p: s.ai_top_p, max_tokens: s.ai_max_tokens, reasoning: s.ai_reasoning, reasoning_format: s.ai_reasoning_format } }, tts: { voice: s.tts_voice } };
+    params: { temperature: s.ai_temperature, top_p: s.ai_top_p, max_tokens: s.ai_max_tokens, reasoning: s.ai_reasoning, reasoning_format: s.ai_reasoning_format },
+    type: s.ai_type, headers: s.ai_headers,
+    relay: { url: s.ai_relay_url, mode: s.ai_relay_mode, target_header: s.ai_relay_target_header, key: withKey ? s.ai_relay_key : '' } }, tts: { voice: s.tts_voice } };
 }));
 api.post('/settings/import', adminOnly, wrap((req) => {
   const d = req.body || {};
@@ -257,9 +277,12 @@ api.post('/settings/import', adminOnly, wrap((req) => {
     if (d.ai.model) saveSetting('ai_model', d.ai.model);
     if (typeof d.ai.extra === 'string') saveSetting('ai_extra', d.ai.extra);
     const ps = d.ai.params || {};
-    for (const [k, key] of [['temperature', 'ai_temperature'], ['top_p', 'ai_top_p'], ['max_tokens', 'ai_max_tokens'], ['reasoning', 'ai_reasoning'], ['reasoning_format', 'ai_reasoning_format']]) {
-      if (typeof ps[k] === 'string') { checkSetting(key, ps[k].trim()); saveSetting(key, ps[k].trim()); }
-    }
+    const rl = d.ai.relay || {};
+    const fields = [[ps.temperature, 'ai_temperature'], [ps.top_p, 'ai_top_p'], [ps.max_tokens, 'ai_max_tokens'], [ps.reasoning, 'ai_reasoning'], [ps.reasoning_format, 'ai_reasoning_format'],
+      [d.ai.type, 'ai_type'], [d.ai.headers, 'ai_headers'], [rl.url, 'ai_relay_url'], [rl.mode, 'ai_relay_mode'], [rl.target_header, 'ai_relay_target_header'], [rl.key || undefined, 'ai_relay_key']]
+      .filter(([v]) => typeof v === 'string').map(([v, key]) => [v.trim(), key]);
+    fields.forEach(([v, key]) => checkSetting(key, v));
+    fields.forEach(([v, key]) => saveSetting(key, v));
   }
   if (d.tts && d.tts.voice) saveSetting('tts_voice', d.tts.voice);
   return { ok: true };

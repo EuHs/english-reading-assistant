@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         英语阅读助手 English Reading Assistant (iOS Userscripts)
 // @namespace    https://github.com/EuHs/english-reading-assistant
-// @version      1.6.0
+// @version      1.7.0
 // @description  网页/PDF 英语阅读：划词翻译、高亮下划线批注、离线词典、AI 词根与时态分析、语法分析、生词本与好词好句（服务器同步）。适配手机端。
 // @author       EuHs
 // @license      MIT
@@ -25,7 +25,7 @@
  * Shared by the browser extension, the userscript and the web app. */
 var ERA = (globalThis.ERA = globalThis.ERA || {});
 
-ERA.VERSION = '1.6.0';
+ERA.VERSION = '1.7.0';
 
 ERA.CATEGORIES = ['医学', '时政', '金融', '科学', '工业', '娱乐', '信息技术', '法律', '生物学', '人工智能'];
 
@@ -422,6 +422,29 @@ ERA.parseJSONLoose = function (text) {
     return { url, headers, body };
   };
 
+  /** {url, headers} listing a profile's models (GET …/models), through its relay when it has one. */
+  ERA.buildModelsRequest = function (profile) {
+    const base = String(profile.baseUrl || '').replace(/\/+$/, '');
+    let url = base + '/models';
+    const headers = { ...(profile.headers || {}) };
+    if (profile.apiKey) headers.Authorization = 'Bearer ' + profile.apiKey;
+    if (profile.type === 'relay') {
+      const r = profile.relay || {};
+      if (r.mode === 'forward') {
+        headers[r.targetHeader || 'X-Target-URL'] = url;
+        url = String(r.url || '').replace(/\/+$/, '');
+        if (r.relayKey) headers['X-Relay-Key'] = r.relayKey;
+      } else {
+        url = String(r.url || '').replace(/\/+$/, '') + '/models';
+        if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey;
+      }
+    }
+    return { url, headers };
+  };
+
+  /** A direct or relay profile has what it needs to send requests. */
+  ERA.profileReady = (p) => (p.type === 'relay' ? !!(p.relay && p.relay.url) : !!(p.baseUrl && (p.apiKey || /localhost|127\.0\.0\.1/.test(p.baseUrl))));
+
   /* Providers disagree on parameters, and most only say so in a 400 error ("This model always engages in
    * thinking and cannot be disabled; please use low, high, or max"). Adapt the request to that error and retry. */
   // thinking switched off wins over a level sent alongside it (e.g. custom JSON disabling what the level enables)
@@ -580,8 +603,7 @@ ERA.aiConfigured = function (cfg) {
   const p = ERA.activeAIProfile(cfg);
   if (!p) return false;
   if (p.type === 'server') return !!(cfg.server.enabled && cfg.server.baseUrl);
-  if (p.type === 'relay') return !!(p.relay && p.relay.url);
-  return !!(p.baseUrl && (p.apiKey || /localhost|127\.0\.0\.1/.test(p.baseUrl)));
+  return ERA.profileReady(p);
 };
 
 /* ---------- Server client ---------- */
@@ -1672,15 +1694,7 @@ ERA.Settings = {
   async fetchModels(cfg) {
     const p = ERA.activeAIProfile(cfg);
     if (p.type === 'server') { const r = await ERA.serverCall('GET', '/api/ai/models', null, cfg); return { ids: r.models || [], info: r.info || {} }; }
-    const base = String(p.baseUrl || '').replace(/\/+$/, '');
-    let url = base + '/models';
-    const headers = { ...(p.headers || {}) };
-    if (p.apiKey) headers.Authorization = 'Bearer ' + p.apiKey;
-    if (p.type === 'relay') {
-      const r = p.relay || {};
-      if (r.mode === 'forward') { headers[r.targetHeader || 'X-Target-URL'] = url; url = r.url; if (r.relayKey) headers['X-Relay-Key'] = r.relayKey; }
-      else { url = String(r.url).replace(/\/+$/, '') + '/models'; if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey; }
-    }
+    const { url, headers } = ERA.buildModelsRequest(p);
     const res = await ERA.P.request({ url, method: 'GET', headers, timeout: 20000 });
     if (!res.ok) throw new Error(`拉取失败 ${res.status}: ${String(res.text).slice(0, 120)}`);
     return ERA.parseModelList(JSON.parse(res.text));

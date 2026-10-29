@@ -201,15 +201,7 @@ ERA.Settings = {
   async fetchModels(cfg) {
     const p = ERA.activeAIProfile(cfg);
     if (p.type === 'server') { const r = await ERA.serverCall('GET', '/api/ai/models', null, cfg); return { ids: r.models || [], info: r.info || {} }; }
-    const base = String(p.baseUrl || '').replace(/\/+$/, '');
-    let url = base + '/models';
-    const headers = { ...(p.headers || {}) };
-    if (p.apiKey) headers.Authorization = 'Bearer ' + p.apiKey;
-    if (p.type === 'relay') {
-      const r = p.relay || {};
-      if (r.mode === 'forward') { headers[r.targetHeader || 'X-Target-URL'] = url; url = r.url; if (r.relayKey) headers['X-Relay-Key'] = r.relayKey; }
-      else { url = String(r.url).replace(/\/+$/, '') + '/models'; if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey; }
-    }
+    const { url, headers } = ERA.buildModelsRequest(p);
     const res = await ERA.P.request({ url, method: 'GET', headers, timeout: 20000 });
     if (!res.ok) throw new Error(`拉取失败 ${res.status}: ${String(res.text).slice(0, 120)}`);
     return ERA.parseModelList(JSON.parse(res.text));

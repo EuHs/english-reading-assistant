@@ -180,6 +180,29 @@ ERA.parseJSONLoose = function (text) {
     return { url, headers, body };
   };
 
+  /** {url, headers} listing a profile's models (GET …/models), through its relay when it has one. */
+  ERA.buildModelsRequest = function (profile) {
+    const base = String(profile.baseUrl || '').replace(/\/+$/, '');
+    let url = base + '/models';
+    const headers = { ...(profile.headers || {}) };
+    if (profile.apiKey) headers.Authorization = 'Bearer ' + profile.apiKey;
+    if (profile.type === 'relay') {
+      const r = profile.relay || {};
+      if (r.mode === 'forward') {
+        headers[r.targetHeader || 'X-Target-URL'] = url;
+        url = String(r.url || '').replace(/\/+$/, '');
+        if (r.relayKey) headers['X-Relay-Key'] = r.relayKey;
+      } else {
+        url = String(r.url || '').replace(/\/+$/, '') + '/models';
+        if (r.relayKey) headers.Authorization = 'Bearer ' + r.relayKey;
+      }
+    }
+    return { url, headers };
+  };
+
+  /** A direct or relay profile has what it needs to send requests. */
+  ERA.profileReady = (p) => (p.type === 'relay' ? !!(p.relay && p.relay.url) : !!(p.baseUrl && (p.apiKey || /localhost|127\.0\.0\.1/.test(p.baseUrl))));
+
   /* Providers disagree on parameters, and most only say so in a 400 error ("This model always engages in
    * thinking and cannot be disabled; please use low, high, or max"). Adapt the request to that error and retry. */
   // thinking switched off wins over a level sent alongside it (e.g. custom JSON disabling what the level enables)
@@ -338,8 +361,7 @@ ERA.aiConfigured = function (cfg) {
   const p = ERA.activeAIProfile(cfg);
   if (!p) return false;
   if (p.type === 'server') return !!(cfg.server.enabled && cfg.server.baseUrl);
-  if (p.type === 'relay') return !!(p.relay && p.relay.url);
-  return !!(p.baseUrl && (p.apiKey || /localhost|127\.0\.0\.1/.test(p.baseUrl)));
+  return ERA.profileReady(p);
 };
 
 /* ---------- Server client ---------- */

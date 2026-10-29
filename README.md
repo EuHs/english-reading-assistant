@@ -32,7 +32,7 @@
 - AI 接口自行配置，三种方式：
   1. **直连** OpenAI 兼容接口（OpenAI / DeepSeek / 智谱 / 通义 / Ollama …）
   2. **本机 API 跳板**（one-api / new-api / LiteLLM / 自建转发）结构化配置：跳板地址、模式（OpenAI 兼容 或 转发：上游地址放在请求头）、上游地址请求头名、跳板密钥
-  3. **使用服务器端 AI**（密钥只保存在服务器）
+  3. **使用服务器端 AI**（密钥只保存在服务器）；服务器同样可以直连或经过跳板，结构化配置与扩展相同
 - **通用请求参数**（扩展、脚本、服务器相同）：温度、top_p、最大输出 tokens、**思考强度**（关闭 / minimal / low / medium / high / xhigh / max，或供应商要求的其他值）、自定义参数 JSON（最后合并，可覆盖任何字段）。留空 = 不发送，用模型默认
   - 思考强度按供应商的写法发送，默认按接口地址和模型名自动判断，也可手动选：`reasoning_effort`（OpenAI 标准：OpenAI、Gemini、Groq、xAI、Ollama…）、`thinking` + `reasoning_effort`（智谱 GLM）、`thinking` 开关（豆包等）、`enable_thinking`（通义千问 DashScope、硅基流动）、`reasoning` 对象（OpenRouter）
   - **从供应商拉取参数结构**：「拉取模型」时读取 `/models` 里的参数信息（OpenRouter 等提供：支持哪些参数、思考强度可选值、能否关闭思考、默认参数、最大输出），显示在设置里，思考强度只列出可选值，模型不支持的温度 / top_p / max_tokens 不发送。多数供应商只给模型名，此时靠下一条
@@ -53,7 +53,7 @@
   - **统计**：总体正确率、按类别、按词（错误最多）、按题型、按词根、近 30 天趋势
   - **Kokoro 离线朗读**（Kokoro-82M，服务器 CPU 推理，模型下载一次后离线使用，带缓存）
   - **阅读器**：粘贴链接（服务器抓取网页 / PDF）、本地 PDF 或粘贴文本，同样支持划词翻译、语法分析、加入生词本
-  - 服务器 AI 配置（Base URL / Key / 模型，**模型列表从上游服务器拉取**）及导入导出；一键生成扩展/脚本配置文件
+  - 服务器 AI 配置（直连或跳板、Base URL / Key / 模型、通用请求参数，**模型列表与参数信息从上游拉取**）及导入导出；一键生成扩展/脚本配置文件
 
 ## 目录结构
 
@@ -155,6 +155,8 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 | `API_TOKEN` | 扩展 / 脚本的初始 Token，请求头 `Authorization: Bearer <token>`；在网页设置里重新生成后以数据库中的为准 |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | 网页管理员的初始账号密码，仅首次启动时写入；默认 `admin` / `123456`，用默认密码登录后必须先改密码 |
 | `AI_BASE_URL` / `AI_API_KEY` / `AI_MODEL` | 上游 OpenAI 兼容接口，例如 Z.AI `https://api.z.ai/api/coding/paas/v4`；模型可在网页设置里从上游拉取 |
+| `AI_TYPE` / `AI_RELAY_URL` / `AI_RELAY_MODE` / `AI_RELAY_TARGET_HEADER` / `AI_RELAY_KEY` | `AI_TYPE=relay` 时经过跳板：`openai` 模式请求跳板的 `/chat/completions`（有跳板密钥时代替 API Key）；`forward` 模式 POST 到跳板，上游地址放在 `AI_RELAY_TARGET_HEADER`（默认 `X-Target-URL`），跳板密钥放在 `X-Relay-Key`。网页设置里可改 |
+| `AI_HEADERS` | 附加请求头 JSON，如 `{"X-Channel":"zhipu"}` |
 | `AI_TEMPERATURE` / `AI_TOP_P` / `AI_MAX_TOKENS` | 通用请求参数，留空不发送（默认温度 0.2） |
 | `AI_REASONING` / `AI_REASONING_FORMAT` | 思考强度（`off` / `low` / … / `max`，留空不发送）及写法（默认 `auto`），见上文“通用请求参数”；`off` 回答最快，不能关闭思考的模型会自动改用最低档 |
 | `AI_EXTRA` | 合并进每次请求的 JSON（最后合并，可覆盖上面各项）。1.5 及以前的默认值 `{"thinking":{"type":"disabled"}}` 升级时会自动改成 `AI_REASONING=off` |
