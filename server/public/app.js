@@ -46,6 +46,8 @@
     if (!r.ok) throw new Error(d.error || '服务器错误 ' + r.status);
     return d;
   };
+  // a handler that returned false for other keys would cancel them, and nothing could be typed
+  const onEnter = (fn) => $app.querySelectorAll('input').forEach((i) => (i.onkeydown = (e) => { if (e.key === 'Enter') fn(); }));
   async function ensureAuth() {
     me = WebP.token() ? await authApi('GET', '/api/auth/me').catch(() => null) : null;
     if (me && !me.mustChange) return true;
@@ -66,7 +68,7 @@
       } catch (e) { document.getElementById('msg').textContent = e.message; }
     };
     document.getElementById('go').onclick = go;
-    $app.querySelectorAll('input').forEach((i) => (i.onkeydown = (e) => e.key === 'Enter' && go()));
+    onEnter(go);
     document.getElementById('user').focus();
   }
   /** Account form: forced after signing in with the default password, and in settings. `current` skips re-typing it right after login. */
@@ -86,9 +88,11 @@
     $app.innerHTML = `<div class="login card"><h2>🔑 修改默认密码</h2>
       <p class="muted">首次登录请设置新密码，以后用新密码登录；账号名也可以一起改。</p>${passwordFields(current)}
       <div class="bar" style="margin-top:12px"><button class="btn" id="chg">保存并进入</button><button class="btn gh" id="out">退出登录</button><span class="muted" id="msg"></span></div></div>`;
-    document.getElementById('chg').onclick = async () => {
+    const chg = async () => {
       try { await savePassword(current); toast('密码已修改'); route(); } catch (e) { document.getElementById('msg').textContent = e.message; }
     };
+    document.getElementById('chg').onclick = chg;
+    onEnter(chg);
     document.getElementById('out').onclick = logout;
   }
   async function logout() {
@@ -461,7 +465,8 @@
       <div class="card"><h3 style="margin-top:0">扩展 / 油猴脚本连接</h3>
         <div class="muted">在扩展或油猴脚本的“设置 → 服务器”里填这两项（网页端用下面的管理员账号登录，不用 Token）。</div>
         <div class="row"><label>服务器地址</label><input type="text" id="origin" value="${esc(location.origin)}" readonly><button class="btn gh" id="copyorigin">复制</button></div>
-        <div class="row"><label>API Token</label><input type="password" id="apitok" value="${esc(token)}" readonly><button class="btn gh" id="showtok">显示</button><button class="btn gh" id="copytok">复制</button><button class="btn gh" id="regen">重新生成</button></div>
+        <div class="row"><label>API Token</label><input type="password" id="apitok" value="${esc(token)}" autocomplete="off" spellcheck="false"><button class="btn gh" id="showtok">显示</button><button class="btn gh" id="copytok">复制</button></div>
+        <div class="bar"><button class="btn" id="savetok">保存 Token</button><button class="btn gh" id="regen">随机生成</button><span class="muted">可以自己输入（至少 12 位：字母、数字或 . _ ~ + / = -），也可以随机生成；保存后旧 Token 立即失效。</span></div>
         <div class="bar"><button class="btn gh" id="extcfg">生成扩展 / 油猴脚本配置文件</button><span class="muted">导入到扩展或油猴脚本的“设置 → 导入”，自动填好服务器地址与 Token，并使用服务器 AI。</span></div>
         <div class="muted" id="m2"></div></div>
       <div class="card" style="margin-top:12px"><h3 style="margin-top:0">服务器 AI（上游）</h3>
@@ -511,11 +516,17 @@
     const tokInput = document.getElementById('apitok');
     document.getElementById('copyorigin').onclick = () => copyText(location.origin).then(() => toast('已复制服务器地址'));
     document.getElementById('showtok').onclick = (e) => { const show = tokInput.type === 'password'; tokInput.type = show ? 'text' : 'password'; e.target.textContent = show ? '隐藏' : '显示'; };
-    document.getElementById('copytok').onclick = () => copyText(token).then(() => toast('已复制 API Token'));
-    document.getElementById('regen').onclick = async () => {
-      if (!confirm('重新生成 API Token？旧 Token 会立即失效，已连接的扩展和油猴脚本要换成新 Token（或重新导入配置文件）。')) return;
-      try { token = (await api('POST', '/api/settings/api-token')).token; tokInput.value = token; m2('已生成新 Token，请更新扩展和油猴脚本里的 Token。'); } catch (e) { m2('✗ ' + e.message); }
+    document.getElementById('copytok').onclick = () => copyText(tokInput.value.trim()).then(() => toast('已复制 API Token'));
+    const setToken = async (method, body, done) => {
+      if (!confirm('旧 Token 会立即失效，已连接的扩展和油猴脚本要换成新 Token（或重新导入配置文件）。继续？')) return;
+      try { token = (await api(method, '/api/settings/api-token', body)).token; tokInput.value = token; m2(done); } catch (e) { m2('✗ ' + e.message); }
     };
+    document.getElementById('savetok').onclick = () => {
+      const t = tokInput.value.trim();
+      if (t === token) return m2('Token 没有改动');
+      setToken('PUT', { token: t }, '已保存，请把扩展和油猴脚本里的 Token 换成新的。');
+    };
+    document.getElementById('regen').onclick = () => setToken('POST', null, '已随机生成新 Token，请把扩展和油猴脚本里的 Token 换成新的。');
     document.getElementById('chg').onclick = async () => {
       const m3 = (t) => (document.getElementById('m3').textContent = t);
       try { await savePassword(); ['cur', 'np1', 'np2'].forEach((id) => (document.getElementById(id).value = '')); m3('已修改 ✓'); } catch (e) { m3('✗ ' + e.message); }

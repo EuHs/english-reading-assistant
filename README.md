@@ -142,7 +142,7 @@ cd ~/era-src && sudo env PORT=8080 AI_API_KEY=你的key bash deploy/install.sh
 v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `npm packages`），在 x86 服务器上会卡住（原因见上方 `ONNXRUNTIME_NODE_INSTALL_CUDA`）：按 Ctrl+C 结束，`git pull` 后重新运行即可，不用清理。
 
 部署完成后用浏览器打开 `http://<IP>:8080`，用 `admin` / `123456` 登录，按提示设置新密码（账号名也可以改；之后在“设置 → 管理员账号”里修改）。
-扩展 / 油猴脚本不用账号密码，而是用 API Token：网页应用“设置 → 扩展 / 油猴脚本连接”里可以查看、复制、重新生成 Token，把服务器地址和 Token 填到扩展/脚本的“设置 → 服务器”并启用；或在同一处生成配置文件，再到扩展里导入。重新生成后旧 Token 立即失效。
+扩展 / 油猴脚本不用账号密码，而是用 API Token：网页应用“设置 → 扩展 / 油猴脚本连接”里可以查看、复制 Token，也可以自己输入新 Token 保存（12–128 位）或随机生成，把服务器地址和 Token 填到扩展/脚本的“设置 → 服务器”并启用；或在同一处生成配置文件，再到扩展里导入。换了 Token 后旧 Token 立即失效。网页的脚本和样式带版本号、每次打开都会检查更新，升级服务器后刷新一次页面即可用上新版。
 
 ### 环境变量
 
@@ -166,7 +166,7 @@ v1.4.0 及更早的 `install.sh` 第 3 步显示 `npm install`（新版显示 `n
 | POST | `/api/auth/login` | `{username, password}` → `{token, user, mustChange}`，会话 30 天 |
 | GET / POST | `/api/auth/me`，`/api/auth/logout` | 当前账号 / 退出登录 |
 | POST | `/api/auth/password` | `{current, password, username?}` 改密码（及账号名），其他会话随之失效 |
-| GET / POST | `/api/settings/api-token` | 查看 / 重新生成扩展用的 API Token（管理员） |
+| GET / POST / PUT | `/api/settings/api-token` | 查看 / 随机生成 / 设为 `{token}`（12–128 位）扩展用的 API Token（管理员） |
 | POST | `/api/words` | 加入生词（见下方字段）；按原形去重，追加出处 |
 | POST | `/api/words/batch` | `{items:[...]}` 批量 |
 | DELETE | `/api/words?lemma=&article_url=` | 取消生词：带 `article_url` 只删本文出处，无出处时删整条 |

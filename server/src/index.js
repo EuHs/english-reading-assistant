@@ -200,6 +200,13 @@ api.get('/ai/models', wrap(async () => ({ models: await ai.models() })));
 /* the API token extensions and userscripts connect with: shown and regenerated in the web app's settings */
 api.get('/settings/api-token', adminOnly, wrap(() => ({ token: apiToken() })));
 api.post('/settings/api-token', adminOnly, wrap(() => { const t = crypto.randomBytes(24).toString('hex'); saveSetting('api_token', t); return { token: t }; }));
+api.put('/settings/api-token', adminOnly, wrap((req) => {
+  const t = String((req.body || {}).token || '').trim();
+  // it travels in an HTTP header and nothing rate-limits wrong tokens, so keep it header-safe and not too short
+  if (!/^[A-Za-z0-9._~+/=-]{12,128}$/.test(t)) throw Object.assign(new Error('Token 需 12–128 位，只能用字母、数字和 . _ ~ + / = -'), { status: 400 });
+  saveSetting('api_token', t);
+  return { token: t };
+}));
 
 /* server settings (AI upstream), import / export: admin only, they hold the AI key */
 api.get('/settings', adminOnly, wrap(() => { const s = settings(); return { ...s, ai_api_key: mask(s.ai_api_key), categories: CATEGORIES, voices: VOICES }; }));
@@ -264,7 +271,15 @@ app.get('/userscript/:file', (req, res, next) => {
   res.type('text/javascript; charset=utf-8').set('Cache-Control', 'no-cache')
     .send(fs.readFileSync(file, 'utf8').replace(/https:\/\/cdn\.jsdelivr\.net\/gh\/EuHs\/english-reading-assistant@main\/userscript\//g, self));
 });
-app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h', index: 'index.html' }));
+// the page asks for app.js?v=<version> and friends, and html / js / css are revalidated on every load,
+// so an upgraded server takes effect at once instead of after the browser's cache expires
+const indexHtml = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8')
+  .replace(/(src|href)="((?!https?:)[^"?]+\.(?:js|css))"/g, `$1="$2?v=${VERSION}"`);
+app.get(['/', '/index.html'], (req, res) => res.type('html').set('Cache-Control', 'no-cache').send(indexHtml));
+app.use(express.static(path.join(ROOT, 'public'), {
+  maxAge: '1h',
+  setHeaders: (res, file) => { if (/\.(html|js|css)$/.test(file)) res.setHeader('Cache-Control', 'no-cache'); },
+}));
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 app.listen(PORT, env.HOST || '0.0.0.0', () => {
