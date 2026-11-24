@@ -9,7 +9,8 @@
   const CATS = ERA.CATEGORIES;
   const TYPE_LABEL = { cloze: '单词填空', ctx: '句中词义', zh2en: '看中文选单词', en2zh: '看单词选中文' };
   const ROOT_LABEL = { prefix: '前缀', root: '词根', suffix: '后缀' };
-  const state = { words: { q: '', category: '', root: '', sort: 'new', page: 1 }, phrases: { q: '', category: '', kind: '' } };
+  const state = { words: { q: '', category: '', root: '', review: '', sort: 'new', page: 1 }, phrases: { q: '', category: '', kind: '' } };
+  let reviewTimer = null, quizView = 0;
 
   ERA.P = WebP;
 
@@ -31,6 +32,43 @@
   const morph = (parts) => `<div class="chips">${(parts || []).map((p) => `<span class="chip ${p.type}" data-root="${esc(p.root || p.part)}" title="${esc(p.origin || '')}">${ROOT_LABEL[p.type] || ''} <b>${esc(p.root || p.part)}</b> ${esc(p.meaning || '')}</span>`).join('')}</div>`;
   const artLine = (o) => o && o.title ? `<div class="muted">— ${esc(o.title)}${o.author ? ' · ' + esc(o.author) : ''}${o.published_at ? ' · ' + esc(o.published_at) : ''}${o.category ? ` <span class="tag">${esc(o.category)}</span>` : ''}</div>` : '';
   const debounce = (fn, ms = 300) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+  function reviewTime(r) {
+    if (!r) return '';
+    const date = new Date(r.due_at);
+    const full = date.toLocaleString('zh-CN', { hour12: false });
+    const due = r.due_at <= Date.now();
+    const text = !r.repetitions ? '待初学 · 现在可复习' : due ? '已到期 · 现在可复习' : '下次：' + date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+    return `<time class="review-time ${due ? 'is-due' : ''}" datetime="${date.toISOString()}" title="${esc(full)}">${esc(text)}</time>`;
+  }
+
+  function reviewPanel(s) {
+    const next = s.next_due_at ? new Date(s.next_due_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+    return `<div class="review-summary"><div><span class="muted">现在可复习</span><strong>${s.due}<small> 个词</small></strong>
+      <div class="muted">含 ${s.new_words} 个待初学 · ${s.relearning} 个遗忘词待巩固</div>
+      <div class="muted">未来 24 小时另有 ${s.next_24h} 个到期${next ? ' · 最近一次 ' + esc(next) : ''}</div></div>
+      <button class="btn" data-open-due ${s.due ? '' : 'disabled'}>开始到期复习</button></div>`;
+  }
+
+  function bindReviewPanel(filters = {}) {
+    clearInterval(reviewTimer);
+    const box = document.getElementById('review-panel');
+    const bind = () => {
+      box.querySelector('[data-open-due]').onclick = () => {
+        Object.assign(quizCfg, { mode: 'due', category: filters.category || '', root: filters.root || '' });
+        if (location.hash === '#/quiz') pageQuiz(); else location.hash = '#/quiz';
+      };
+    };
+    bind();
+    const timer = setInterval(async () => {
+      if (!box.isConnected) return clearInterval(timer);
+      try {
+        const s = await api('GET', '/api/review?' + qs(filters));
+        if (box.isConnected) { box.innerHTML = reviewPanel(s); bind(); }
+      } catch { /* Keep the last known counts; navigation retries the request. */ }
+    }, 60000);
+    reviewTimer = timer;
+  }
 
   let catCounts = null;
   async function loadCatCounts() {
@@ -113,17 +151,22 @@
   /* ---------- words ---------- */
   async function pageWords() {
     const s = state.words;
-    const [res, roots] = await Promise.all([api('GET', '/api/words?' + qs({ ...s, size: 30 })), api('GET', '/api/roots'), catCounts || loadCatCounts()]);
-    $app.innerHTML = `<h2>📒 生词本 <span class="muted">${res.total} 个</span></h2>
+    const [res, roots, review] = await Promise.all([api('GET', '/api/words?' + qs({ ...s, size: 30 })), api('GET', '/api/roots'), api('GET', '/api/review'), catCounts || loadCatCounts()]);
+    $app.innerHTML = `<div class="bar"><h2 style="margin:0">📒 生词本 <span class="muted">${res.total} 个</span></h2><span style="flex:1"></span><button class="btn gh sm" id="words-context">AI 语境助记</button></div>
+      <div class="card" id="review-panel" style="margin-bottom:12px">${reviewPanel(review)}</div>
       <div class="bar"><input type="search" id="q" placeholder="搜索单词 / 释义 / 变形" value="${esc(s.q)}" style="flex:1;min-width:200px">
         <select id="root"><option value="">全部词根</option>${roots.map((r) => `<option value="${esc(r.root)}" ${s.root === r.root ? 'selected' : ''}>${esc(r.root)} ${esc(r.meaning || '')} (${r.words})</option>`).join('')}</select>
-        <select id="sort">${Object.entries({ new: '最新加入', alpha: '字母顺序', wrong: '错误最多', freq: '出现最多' }).map(([k, v]) => `<option value="${k}" ${s.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <select id="review-filter" aria-label="复习时间筛选">${Object.entries({ '': '全部复习时间', due: '现在可复习', scheduled: '尚未到期' }).map(([k, v]) => `<option value="${k}" ${s.review === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <select id="sort" aria-label="生词排序">${Object.entries({ new: '最新加入', alpha: '字母顺序', wrong: '错误最多', freq: '出现最多', due: '复习时间最早' }).map(([k, v]) => `<option value="${k}" ${s.sort === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       ${catChips(s.category, catCounts)}
       <div class="grid" style="margin-top:12px">${res.items.map(wordCard).join('') || '<div class="empty">还没有生词。在扩展或油猴脚本中右键「加入生词本」，或使用阅读器页面。</div>'}</div>
       ${pager(res)}`;
     document.getElementById('q').oninput = debounce((e) => { s.q = e.target.value.trim(); s.page = 1; pageWords(); });
     document.getElementById('root').onchange = (e) => { s.root = e.target.value; s.page = 1; pageWords(); };
     document.getElementById('sort').onchange = (e) => { s.sort = e.target.value; pageWords(); };
+    document.getElementById('review-filter').onchange = (e) => { s.review = e.target.value; s.page = 1; pageWords(); };
+    bindReviewPanel();
+    document.getElementById('words-context').onclick = () => ERA.ContextUI.open({ scope: s.review === 'due' ? 'due' : 'all', category: s.category, root: s.root });
     bindCommon(() => pageWords(), s);
     const q = document.getElementById('q');
     if (s.q) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
@@ -139,6 +182,7 @@
       <div class="w-head"><span class="w-lemma">${esc(w.lemma)}</span>${spk(w.lemma)}<span class="ph">${w.phonetic ? '/' + esc(w.phonetic) + '/' : ''}</span>
         ${w.wrong_count ? `<span class="tag bad">错 ${w.wrong_count}</span>` : ''}</div>
       <div>${esc(w.meaning || (w.translation || '').split('\n')[0])}</div>
+      <div>${reviewTime(w.review)}</div>
       ${w.forms_seen.length > 1 || (w.forms_seen[0] && w.forms_seen[0] !== w.lemma) ? `<div class="muted">见过的形式：${w.forms_seen.map(esc).join(', ')}</div>` : ''}
       ${w.roots.length ? `<div style="margin-top:6px">${morph(w.roots)}</div>` : ''}
       ${o ? `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div>${artLine(o)}` : ''}
@@ -160,6 +204,7 @@
       <div class="w-head"><span class="w-lemma" style="font-size:28px">${esc(w.lemma)}</span>${spk(w.lemma)}<span class="ph">${w.phonetic ? '/' + esc(w.phonetic) + '/' : ''} ${esc(w.pos || '')}</span></div>
       <div style="font-size:16px;margin:6px 0">${esc(w.meaning || '')}</div>
       <div class="muted" style="white-space:pre-wrap">${esc(w.translation || '')}</div>
+      <div class="sec"><h4>复习安排</h4>${reviewTime(w.review)}<div class="muted">${w.review && w.review.last_reviewed_at ? '上次复习：' + esc(new Date(w.review.last_reviewed_at).toLocaleString('zh-CN', { hour12: false })) : '尚未进行首次测验'} · 到期后答对才延长间隔</div></div>
       ${w.morphology.length || w.roots.length ? `<div class="sec"><h4>构词 · 词根</h4>${morph(w.morphology.length ? w.morphology : w.roots)}${w.etymology ? `<div class="muted" style="margin-top:6px">${esc(w.etymology)}</div>` : ''}</div>` : ''}
       ${forms ? `<div class="sec"><h4>词形变化</h4><table>${forms}</table></div>` : ''}
       ${tenses ? `<div class="sec"><h4>不同时态</h4><table><tr><th>时态</th><th>形式</th><th>例句</th></tr>${tenses}</table></div>` : ''}
@@ -226,17 +271,24 @@
   }
 
   /* ---------- quiz ---------- */
-  const quizCfg = { size: 20, category: '', root: '', mode: 'all', types: Object.keys(TYPE_LABEL) };
+  const quizCfg = { size: 20, category: '', root: '', mode: 'due', types: Object.keys(TYPE_LABEL) };
+  ERA.ContextUI.init({ api, esc, modal, showWord, reviewTime, toast, runQuiz, reviewCards, localRetest, route });
   async function pageQuiz() {
-    const roots = await api('GET', '/api/roots');
+    const view = ++quizView;
+    clearInterval(reviewTimer);
+    const [roots, review] = await Promise.all([api('GET', '/api/roots'), api('GET', '/api/review?' + qs({ category: quizCfg.category, root: quizCfg.root }))]);
     await (catCounts || loadCatCounts());
+    if (view !== quizView) return;
     $app.innerHTML = `<div class="quiz"><h2>📝 生词测验</h2>
-      <div class="card"><h4>题量</h4><div class="sizes">${[20, 50, 80, 100].map((n) => `<span class="chip ${quizCfg.size === n ? 'on' : ''}" data-size="${n}">${n} 题</span>`).join('')}</div>
-      <h4>范围</h4><div class="chips"><span class="chip ${quizCfg.mode === 'all' ? 'on' : ''}" data-mode="all">全部生词</span><span class="chip ${quizCfg.mode === 'wrong' ? 'on' : ''}" data-mode="wrong">仅错题集</span></div>
+      <div class="card" id="review-panel" style="margin-bottom:12px">${reviewPanel(review)}</div>
+      <div class="card"><h4>题量</h4><div class="sizes">${[10, 20, 30, 50, 80, 100].map((n) => `<button type="button" class="chip ${quizCfg.size === n ? 'on' : ''}" aria-pressed="${quizCfg.size === n}" data-size="${n}">${n} 题</button>`).join('')}</div>
+      <div class="row"><label for="quiz-size">自定题量（1–100）</label><input type="number" id="quiz-size" min="1" max="100" step="1" value="${quizCfg.size}"></div>
+      <h4>范围</h4><div class="chips">${Object.entries({ due: '仅到期生词', all: '全部生词', wrong: '仅错题集' }).map(([k, v]) => `<button type="button" class="chip ${quizCfg.mode === k ? 'on' : ''}" aria-pressed="${quizCfg.mode === k}" data-mode="${k}">${v}</button>`).join('')}</div>
       <h4>类别</h4>${catChips(quizCfg.category, catCounts)}
       <h4>词根</h4><select id="root"><option value="">不限</option>${roots.map((r) => `<option value="${esc(r.root)}" ${quizCfg.root === r.root ? 'selected' : ''}>${esc(r.root)} ${esc(r.meaning || '')} (${r.words})</option>`).join('')}</select>
       <h4>题型（可多选）</h4><div class="chips">${Object.entries(TYPE_LABEL).map(([t, l]) => `<span class="chip ${quizCfg.types.includes(t) ? 'on' : ''}" data-type="${t}">${l}</span>`).join('')}</div>
       <p class="muted">单词填空：例句挖空，选应填的单词；句中词义：选单词在这句话里的意思；看中文选单词：按中文意思选单词；看单词选中文。每题 4 个选项（1 个正确 + 3 个干扰项），干扰项不会和正确答案意思相同（同义词不会出现）。需要例句的题型只出给有例句的生词。键盘 1-4 选择，回车下一题。</p>
+      <details class="review-rules"><summary>复习时间如何安排</summary><p>首次答对或遗忘后巩固答对，20 分钟后回访；之后在到期测验中答对，间隔依次为 1、3、7、14、30、60 天，后续保持 60 天。每次从实际作答时间开始计时。</p><p>答错立即回到待复习，并重走间隔。提前练习答对不推远日期；同一轮错题再测只恢复到 20 分钟，不连续升级。未答题保留原时间。错题集的“已掌握”不停止长期回访。</p><p>这是参考遗忘曲线和间隔学习原则的默认方案，具体间隔未作个人拟合。到期生词按复习时间先后出题，不足题量时按可出题数量生成。到期数量每分钟刷新，打开此页面即可查看。</p></details>
       <button class="btn" id="start">开始测验</button> <span class="muted" id="msg"></span></div>
       <h3 style="margin-top:20px">历史记录</h3><div class="card" id="hist">加载中…</div></div>`;
     $app.querySelectorAll('[data-size]').forEach((c) => (c.onclick = () => { quizCfg.size = +c.dataset.size; pageQuiz(); }));
@@ -248,20 +300,35 @@
       pageQuiz();
     }));
     $app.querySelectorAll('[data-cat]').forEach((c) => (c.onclick = () => { quizCfg.category = c.dataset.cat; pageQuiz(); }));
-    document.getElementById('root').onchange = (e) => (quizCfg.root = e.target.value);
+    document.getElementById('root').onchange = (e) => { quizCfg.root = e.target.value; pageQuiz(); };
+    document.getElementById('quiz-size').oninput = (e) => {
+      if (e.target.checkValidity() && e.target.value) quizCfg.size = +e.target.value;
+      $app.querySelectorAll('[data-size]').forEach((b) => { const on = +b.dataset.size === +e.target.value; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    };
+    bindReviewPanel({ category: quizCfg.category, root: quizCfg.root });
     document.getElementById('start').onclick = async () => {
-      try { runQuiz(await api('POST', '/api/quiz', quizCfg)); } catch (e) { document.getElementById('msg').textContent = e.message; }
+      const size = document.getElementById('quiz-size');
+      if (!size.value || !size.reportValidity()) return;
+      quizCfg.size = +size.value;
+      const b = document.getElementById('start'), msg = document.getElementById('msg');
+      b.disabled = true; b.textContent = '出题中…'; msg.textContent = '';
+      try { const q = await api('POST', '/api/quiz', quizCfg); if (view === quizView) runQuiz(q); }
+      catch (e) { if (msg.isConnected) msg.textContent = e.message; }
+      finally { if (b.isConnected) { b.disabled = false; b.textContent = '开始测验'; } }
     };
     const hist = await api('GET', '/api/quiz');
-    document.getElementById('hist').innerHTML = hist.length ? `<table><tr><th>时间</th><th>范围</th><th>题型</th><th>成绩</th><th></th></tr>${hist.slice(0, 20).map((q) => `<tr><td>${esc(q.created_at)}</td><td>${q.mode === 'wrong' ? '错题集' : '全部'}${q.category ? ' · ' + esc(q.category) : ''}${q.root ? ' · ' + esc(q.root) : ''}</td><td class="muted">${String(q.types || '').split(',').filter(Boolean).map((t) => TYPE_LABEL[t] || t).join('、') || '混合'}</td><td>${q.correct}/${q.total}</td><td>${q.finished_at ? `<a href="#" data-review="${q.id}">查看</a>` : `<a href="#" data-resume="${q.id}">继续</a>`}</td></tr>`).join('')}</table>` : '<div class="muted">还没有测验记录</div>';
+    if (view !== quizView) return;
+    document.getElementById('hist').innerHTML = hist.length ? `<div style="overflow-x:auto"><table><tr><th>时间</th><th>范围</th><th>题型</th><th>成绩</th><th></th></tr>${hist.slice(0, 20).map((q) => `<tr><td>${esc(q.created_at)}</td><td>${q.mode === 'context' ? '语境巩固' : q.mode === 'due' ? '到期复习' : q.mode === 'wrong' ? '错题集' : '全部'}${q.category ? ' · ' + esc(q.category) : ''}${q.root ? ' · ' + esc(q.root) : ''}</td><td class="muted">${String(q.types || '').split(',').filter(Boolean).map((t) => TYPE_LABEL[t] || t).join('、') || '混合'}</td><td>${q.correct}/${q.total}</td><td>${q.finished_at ? `<a href="#" data-review="${q.id}">查看</a>` : `<a href="#" data-resume="${q.id}">继续</a>`}</td></tr>`).join('')}</table></div>` : '<div class="muted">还没有测验记录</div>';
     $app.querySelectorAll('[data-review]').forEach((a) => (a.onclick = async (e) => { e.preventDefault(); showResult(await api('POST', `/api/quiz/${a.dataset.review}/finish`)); }));
     $app.querySelectorAll('[data-resume]').forEach((a) => (a.onclick = async (e) => { e.preventDefault(); runQuiz(await api('GET', '/api/quiz/' + a.dataset.resume)); }));
   }
 
   function runQuiz(quiz) {
+    const view = ++quizView;
+    clearInterval(reviewTimer);
     let i = quiz.questions.findIndex((q) => q.chosen == null);
+    let answered = false, busy = false;
     if (i < 0) return finish();
-    let answered = false;
     function draw() {
       const q = quiz.questions[i];
       answered = false;
@@ -269,34 +336,54 @@
       $app.innerHTML = `<div class="quiz"><div class="bar" style="justify-content:space-between"><span class="muted">第 ${i + 1} / ${quiz.questions.length} 题</span><span class="muted">正确 ${quiz.questions.filter((x) => x.correct).length}</span><button class="btn gh sm" id="quit">结束测验</button></div>
         <div class="progress"><i style="width:${(i / quiz.questions.length) * 100}%"></i></div>
         <div class="card"><div class="q-type">${TYPE_LABEL[q.type]}</div>
+        ${quiz.context_id ? `<div class="bar"><span class="tag">语境选择巩固</span><a id="context-return" href="#/context/${quiz.context_id}">返回短文</a></div>` : ''}
         <div class="q-prompt ${long ? 'long' : ''}">${q.type === 'ctx' ? esc(q.prompt).replace(/【([^】]*)】/, '<span class="mark">$1</span>') : esc(q.prompt)} ${q.type !== 'zh2en' ? spk(q.prompt.replace('_____', '…').replace(/[【】]/g, '')) : ''}</div>
         ${q.hint ? `<div class="muted">${esc(q.hint)}</div>` : ''}
         <div class="opts">${q.options.map((o, k) => `<button class="opt" data-k="${k}"><b>${k + 1}</b>${esc(o)}</button>`).join('')}</div>
         <div id="fb"></div></div></div>`;
       $app.querySelectorAll('.opt').forEach((b) => (b.onclick = () => choose(+b.dataset.k)));
+      if (quiz.context_id) document.getElementById('context-return').onclick = (e) => { e.preventDefault(); ERA.ContextUI.resume(quiz.context_id); };
       document.getElementById('quit').onclick = () => { if (confirm('结束本次测验？未答的题目计为未完成。')) finish(); };
       if (q.type === 'en2zh') ERA.speak(q.prompt).catch(() => {});
     }
     async function choose(k) {
-      if (answered) return;
-      answered = true;
+      if (answered || busy || view !== quizView) return;
+      busy = true;
       const q = quiz.questions[i];
       $app.querySelectorAll('.opt').forEach((b) => (b.disabled = true));
-      const r = await api('POST', `/api/quiz/${quiz.id}/answer`, { question_id: q.id, choice: k });
-      q.chosen = k; q.correct = r.correct; q.answer = r.answer;
+      document.getElementById('quit').disabled = true;
+      const fb = document.getElementById('fb');
+      fb.textContent = '正在保存答案与复习时间…'; fb.setAttribute('role', 'status');
+      let r;
+      try { r = await api('POST', `/api/quiz/${quiz.id}/answer`, { question_id: q.id, choice: k }); }
+      catch (e) {
+        if (view === quizView && fb.isConnected) { fb.textContent = '保存失败：' + e.message + '，请重选以重试。'; $app.querySelectorAll('.opt').forEach((b) => (b.disabled = false)); document.getElementById('quit').disabled = false; }
+        busy = false; return;
+      }
+      busy = false;
+      if (view !== quizView || !fb.isConnected) return;
+      answered = true;
+      document.getElementById('quit').disabled = false;
+      q.chosen = r.chosen == null ? k : r.chosen; q.correct = r.correct; q.answer = r.answer;
       $app.querySelector(`.opt[data-k="${r.answer}"]`).classList.add('right');
-      if (!r.correct) $app.querySelector(`.opt[data-k="${k}"]`).classList.add('wrong');
+      if (!r.correct) $app.querySelector(`.opt[data-k="${q.chosen}"]`).classList.add('wrong');
       const w = r.word || {};
       const o = (w.occurrences || [])[0];
       document.getElementById('fb').innerHTML = `<div class="feedback">${r.correct ? '✅ 正确' : '❌ 错误'} · <b>${esc(w.lemma)}</b> ${spk(w.lemma || '')} <span class="ph">${w.phonetic ? '/' + esc(w.phonetic) + '/' : ''}</span> ${esc(w.meaning || '')}
+        <div>${reviewTime(r.review)}</div>${r.review_reason === 'early' ? '<div class="muted">提前练习，保留原复习时间</div>' : r.review_reason === 'newer' ? '<div class="muted">已有更新的复习记录，保留最新安排</div>' : ''}
         ${(w.roots || []).length ? `<div style="margin-top:6px">${morph(w.roots)}</div>` : ''}
         ${o ? `<div class="sentence">${ERA.highlightWord(o.sentence, o.surface)}</div>` : ''}</div>
         <div style="margin-top:12px;text-align:right"><button class="btn" id="next">${i + 1 < quiz.questions.length ? '下一题 ⏎' : '查看结果'}</button></div>`;
       document.getElementById('next').onclick = next;
-      if (r.correct) setTimeout(() => { if (quiz.questions[i] === q) next(); }, 900);
+      if (r.correct) setTimeout(() => { if (view === quizView && quiz.questions[i] === q) next(); }, 900);
     }
     function next() { if (!answered) return; i++; if (i >= quiz.questions.length) finish(); else draw(); }
-    async function finish() { document.onkeydown = null; showResult(await api('POST', `/api/quiz/${quiz.id}/finish`)); }
+    async function finish() {
+      if (view !== quizView || busy) return;
+      busy = true; document.onkeydown = null;
+      try { const result = await api('POST', `/api/quiz/${quiz.id}/finish`); if (view === quizView) showResult(result); }
+      catch (e) { busy = false; toast(e.message); }
+    }
     document.onkeydown = (e) => {
       if (/^[1-4]$/.test(e.key)) choose(+e.key - 1);
       if (e.key === 'Enter') next();
@@ -306,22 +393,28 @@
 
   /** Result page: score + wrong-question review + re-test of this quiz's mistakes. */
   function showResult(quiz) {
+    ++quizView;
     document.onkeydown = null;
+    if (quiz.context_id) { ERA.ContextUI.result(quiz).catch((e) => toast(e.message)); return; }
     const total = quiz.questions.length, right = quiz.questions.filter((q) => q.correct).length;
     $app.innerHTML = `<div class="quiz"><h2>测验结果</h2><div class="card"><div class="score">${right} / ${total}</div><div style="text-align:center" class="muted">正确率 ${pct(total ? right / total : 0)}${quiz.category ? ' · ' + esc(quiz.category) : ''}</div>
-      <div class="bar" style="justify-content:center;margin-top:12px">${quiz.wrong.length ? '<button class="btn" id="review">📖 复习错题</button><button class="btn gh" id="retest">🔁 错题再测</button>' : ''}<a class="btn gh" href="#/wrong">错题集</a><button class="btn gh" id="again">再来一次</button></div></div>
+      <div class="bar" style="justify-content:center;margin-top:12px"><button class="btn" id="context-quiz">AI 语境助记</button>${quiz.wrong.length ? '<button class="btn gh" id="review">📖 复习错题</button><button class="btn gh" id="retest">🔁 错题再测</button>' : ''}<a class="btn gh" href="#/wrong">错题集</a><button class="btn gh" id="again">再来一次</button></div></div>
+      <h3>下次复习安排</h3><div class="card review-list">${quiz.questions.map((q) => `<div><span>${esc(q.word.lemma)}${q.chosen == null ? '（未作答）' : ''}</span>${reviewTime(q.review)}</div>`).join('')}</div>
       <h3>错题（${quiz.wrong.length}）</h3>${quiz.wrong.map((q) => `<div class="card" style="margin-bottom:10px"><div class="muted">${TYPE_LABEL[q.type]} · ${esc(q.prompt)}</div>
         <div>你的答案：<span style="color:var(--bad)">${q.chosen == null ? '未作答' : esc(q.options[q.chosen])}</span> · 正确：<b style="color:var(--ok)">${esc(q.options[q.answer])}</b></div>
         <div class="w-head" style="margin-top:6px"><b>${esc(q.detail.lemma)}</b>${spk(q.detail.lemma)}<span class="ph">${q.detail.phonetic ? '/' + esc(q.detail.phonetic) + '/' : ''}</span> ${esc(q.detail.meaning || '')}</div>
         ${q.detail.roots.length ? morph(q.detail.roots) : ''}</div>`).join('') || '<div class="empty">全部正确 🎉</div>'}</div>`;
     document.getElementById('again').onclick = () => pageQuiz();
+    document.getElementById('context-quiz').onclick = () => ERA.ContextUI.open({ quiz_id: quiz.id, scope: 'all' });
     if (quiz.wrong.length) {
-      document.getElementById('review').onclick = () => reviewCards(quiz.wrong.map((q) => q.detail), () => showResult(quiz));
-      document.getElementById('retest').onclick = () => localRetest(quiz.wrong, () => showResult(quiz));
+      const refresh = async () => { try { showResult(await api('POST', `/api/quiz/${quiz.id}/finish`)); } catch (e) { toast(e.message); } };
+      document.getElementById('review').onclick = () => reviewCards(quiz.wrong.map((q) => q.detail), refresh);
+      document.getElementById('retest').onclick = () => localRetest(quiz, refresh);
     }
   }
 
   function reviewCards(words, done) {
+    ++quizView;
     let i = 0;
     const draw = () => {
       const w = words[i];
@@ -340,22 +433,34 @@
     draw();
   }
 
-  function localRetest(wrong, done) {
-    const qs2 = wrong.map((q) => { const opts = q.options.map((t, k) => ({ t, ok: k === q.answer })).sort(() => Math.random() - 0.5); return { ...q, opts }; });
+  function localRetest(quiz, done) {
+    const view = ++quizView;
+    const qs2 = quiz.wrong.map((q) => { const opts = q.options.map((t, k) => ({ t, choice: k, ok: k === q.answer })).sort(() => Math.random() - 0.5); return { ...q, opts }; });
     let i = 0, right = 0;
     const draw = () => {
       if (i >= qs2.length) {
-        $app.innerHTML = `<div class="quiz"><div class="card"><div class="score">${right} / ${qs2.length}</div><p style="text-align:center" class="muted">错题再测完成（不计入统计）</p><div class="bar" style="justify-content:center"><button class="btn" id="b">返回结果</button></div></div></div>`;
+        $app.innerHTML = `<div class="quiz"><div class="card"><div class="score">${right} / ${qs2.length}</div><p style="text-align:center" class="muted">错题再测完成（不计入测验成绩）<br>本轮遗忘词答对后安排 20 分钟回访；反复再测不延长间隔。</p><div class="bar" style="justify-content:center"><button class="btn" id="b">返回结果与复习时间</button></div></div></div>`;
         return (document.getElementById('b').onclick = done);
       }
       const q = qs2[i];
       $app.innerHTML = `<div class="quiz"><div class="muted">错题再测 ${i + 1} / ${qs2.length}</div><div class="card"><div class="q-type">${TYPE_LABEL[q.type]}</div><div class="q-prompt ${q.prompt.length > 40 ? 'long' : ''}">${q.type === 'ctx' ? esc(q.prompt).replace(/【([^】]*)】/, '<span class="mark">$1</span>') : esc(q.prompt)}</div>${q.hint ? `<div class="muted">${esc(q.hint)}</div>` : ''}
-        <div class="opts">${q.opts.map((o, k) => `<button class="opt" data-k="${k}"><b>${k + 1}</b>${esc(o.t)}</button>`).join('')}</div></div></div>`;
-      $app.querySelectorAll('.opt').forEach((b) => (b.onclick = () => {
+        <div class="opts">${q.opts.map((o, k) => `<button class="opt" data-k="${k}"><b>${k + 1}</b>${esc(o.t)}</button>`).join('')}</div><div id="retest-fb" role="status"></div></div></div>`;
+      let saving = false;
+      $app.querySelectorAll('.opt').forEach((b) => (b.onclick = async () => {
+        if (saving || view !== quizView) return;
+        saving = true;
         const k = +b.dataset.k;
+        const fb = document.getElementById('retest-fb');
+        $app.querySelectorAll('.opt').forEach((x) => (x.disabled = true));
+        fb.textContent = '正在保存复习时间…';
+        let r;
+        try { r = await api('POST', `/api/quiz/${quiz.id}/retest`, { question_id: q.id, choice: q.opts[k].choice }); }
+        catch (e) { if (fb.isConnected) { fb.textContent = '保存失败：' + e.message + '，请重选以重试。'; $app.querySelectorAll('.opt').forEach((x) => (x.disabled = false)); } saving = false; return; }
+        if (view !== quizView || !fb.isConnected) return;
         $app.querySelectorAll('.opt').forEach((x, j) => { x.disabled = true; if (q.opts[j].ok) x.classList.add('right'); });
-        if (q.opts[k].ok) right++; else b.classList.add('wrong');
-        setTimeout(() => { i++; draw(); }, q.opts[k].ok ? 600 : 1500);
+        if (r.correct) right++; else b.classList.add('wrong');
+        fb.innerHTML = reviewTime(r.review);
+        setTimeout(() => { if (view === quizView) { i++; draw(); } }, r.correct ? 900 : 1500);
       }));
     };
     draw();
@@ -366,14 +471,15 @@
     const list = await api('GET', '/api/wrongbook?' + qs({ category: cat, all: all ? 1 : '' }));
     $app.innerHTML = `<h2>❌ 错题集 <span class="muted">${list.length} 个</span></h2>
       <div class="bar"><label><input type="checkbox" id="all" ${all ? 'checked' : ''}> 包含已掌握</label>
-      <span style="flex:1"></span>${[20, 50, 80, 100].map((n) => `<button class="btn gh sm" data-wq="${n}">错题测验 ${n}</button>`).join('')}</div>
+      <span style="flex:1"></span><button class="btn gh sm" id="wrong-context">AI 语境助记</button>${[20, 50, 80, 100].map((n) => `<button class="btn gh sm" data-wq="${n}">错题测验 ${n}</button>`).join('')}</div>
       ${catChips(cat)}
       <div class="card" style="margin-top:12px;overflow-x:auto"><table><tr><th>单词</th><th>释义</th><th>错误</th><th class="hide-m">作答</th><th class="hide-m">正确率</th><th class="hide-m">最近出错</th><th></th></tr>
-      ${list.map((w) => `<tr><td><a href="#" data-word="${w.id}"><b>${esc(w.lemma)}</b></a> ${spk(w.lemma)}</td><td>${esc((w.meaning || w.translation || '').split('\n')[0].slice(0, 50))}</td>
+      ${list.map((w) => `<tr><td><a href="#" data-word="${w.id}"><b>${esc(w.lemma)}</b></a> ${spk(w.lemma)}</td><td>${esc((w.meaning || w.translation || '').split('\n')[0].slice(0, 50))}<div>${reviewTime(w.review)}</div></td>
         <td><span class="tag bad">${w.wrong_count}</span></td><td class="hide-m">${w.attempts}</td><td class="hide-m">${pct(w.attempts ? w.rights / w.attempts : null)}</td><td class="hide-m muted">${esc((w.last_wrong_at || '').slice(0, 16))}</td>
         <td>${w.mastered ? `<button class="btn gh sm" data-m="${w.id}" data-v="0">取消掌握</button>` : `<button class="btn gh sm" data-m="${w.id}" data-v="1">已掌握</button>`}</td></tr>`).join('')}</table>
-      ${list.length ? '' : '<div class="empty">错题集为空</div>'}</div><p class="muted">在测验中连续答对 3 次的单词会自动标记为已掌握。</p>`;
+      ${list.length ? '' : '<div class="empty">错题集为空</div>'}</div><p class="muted">在测验中连续答对 3 次的单词会自动标记为已掌握；已掌握的词仍按复习时间回访。</p>`;
     document.getElementById('all').onchange = (e) => pageWrong(cat, e.target.checked);
+    document.getElementById('wrong-context').onclick = () => ERA.ContextUI.open({ scope: 'wrong', category: cat });
     $app.querySelectorAll('[data-cat]').forEach((c) => (c.onclick = () => pageWrong(c.dataset.cat, all)));
     $app.querySelectorAll('[data-word]').forEach((a) => (a.onclick = (e) => { e.preventDefault(); showWord(a.dataset.word); }));
     $app.querySelectorAll('[data-m]').forEach((b) => (b.onclick = async () => { await api('POST', '/api/wrongbook/' + b.dataset.m, { mastered: b.dataset.v === '1' }); pageWrong(cat, all); }));
@@ -593,8 +699,11 @@
   }
 
   /* ---------- router ---------- */
-  const PAGES = { words: pageWords, phrases: pagePhrases, roots: pageRoots, articles: pageArticles, quiz: pageQuiz, wrong: () => pageWrong(), stats: pageStats, reader: pageReader, settings: pageSettings };
+  const PAGES = { words: pageWords, phrases: pagePhrases, roots: pageRoots, articles: pageArticles, quiz: pageQuiz, context: () => ERA.ContextUI.page(), wrong: () => pageWrong(), stats: pageStats, reader: pageReader, settings: pageSettings };
   async function route() {
+    ++quizView;
+    clearInterval(reviewTimer);
+    ERA.ContextUI.leave();
     if (!(await ensureAuth())) return;
     const name = (location.hash.match(/^#\/(\w+)/) || [])[1] || 'words';
     document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.getAttribute('href') === '#/' + name));

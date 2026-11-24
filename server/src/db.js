@@ -39,17 +39,31 @@ export function openDb(file) {
   CREATE TABLE IF NOT EXISTS wrongbook(
     word_id INTEGER PRIMARY KEY REFERENCES words(id) ON DELETE CASCADE, wrong_count INTEGER DEFAULT 0, right_streak INTEGER DEFAULT 0,
     last_wrong_at TEXT, mastered INTEGER DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS word_reviews(
+    word_id INTEGER PRIMARY KEY REFERENCES words(id) ON DELETE CASCADE, stage INTEGER NOT NULL DEFAULT -1,
+    due_at INTEGER NOT NULL, last_reviewed_at INTEGER, repetitions INTEGER NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 0, last_question_id INTEGER REFERENCES quiz_questions(id) ON DELETE SET NULL);
+  CREATE TABLE IF NOT EXISTS context_studies(
+    id INTEGER PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, topic TEXT NOT NULL, difficulty TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'generating', generation INTEGER NOT NULL DEFAULT 1, words TEXT NOT NULL,
+    content TEXT, questions TEXT, reading_answers TEXT NOT NULL DEFAULT '[]', analysis_viewed INTEGER NOT NULL DEFAULT 0,
+    source_quiz_id INTEGER REFERENCES quizzes(id) ON DELETE SET NULL,
+    consolidation_quiz_id INTEGER UNIQUE REFERENCES quizzes(id) ON DELETE SET NULL,
+    error TEXT, created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
   CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY, username TEXT, created_at TEXT DEFAULT (datetime('now')), expires_at TEXT);
   CREATE INDEX IF NOT EXISTS idx_occ_word ON occurrences(word_id);
   CREATE INDEX IF NOT EXISTS idx_occ_article ON occurrences(article_id);
   CREATE INDEX IF NOT EXISTS idx_qq_quiz ON quiz_questions(quiz_id);
   CREATE INDEX IF NOT EXISTS idx_art_cat ON articles(category);
+  CREATE INDEX IF NOT EXISTS idx_review_due ON word_reviews(due_at, word_id);
   `);
   // columns added after the first release (CREATE TABLE IF NOT EXISTS leaves existing tables as they were)
-  for (const [table, col] of [['words', 'synonyms TEXT'], ['quizzes', 'types TEXT']]) {
+  for (const [table, col] of [['words', 'synonyms TEXT'], ['quizzes', 'types TEXT'], ['quiz_questions', 'review_revision INTEGER NOT NULL DEFAULT 0']]) {
     if (!db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col.split(' ')[0])) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`);
   }
+  // Existing words start due; historical quiz scores do not establish spaced recall.
+  db.prepare('INSERT OR IGNORE INTO word_reviews(word_id,due_at) SELECT id,? FROM words').run(Date.now());
   return db;
 }
 

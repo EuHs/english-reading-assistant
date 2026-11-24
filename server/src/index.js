@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { openDb } from './db.js';
 import { Service } from './service.js';
+import { ContextService } from './context.js';
 import { AIClient, lookup, CATEGORIES, ERA } from './lexicon.js';
 import { TTS, VOICES } from './tts.js';
 
@@ -85,6 +86,7 @@ const sessionOk = (t) => !!t && !!db.prepare("SELECT 1 FROM sessions WHERE token
 
 const ai = new AIClient(settings);
 const svc = new Service(db, ai);
+const contexts = new ContextService(db, svc, ai);
 const tts = new TTS({ dataDir: DATA, enabled: env.ENABLE_TTS !== '0', dtype: env.KOKORO_DTYPE, hfEndpoint: env.HF_ENDPOINT });
 
 if (!apiToken()) console.warn('⚠️  API_TOKEN 未设置：扩展用的 API 对所有人开放。请在 .env 中设置 API_TOKEN，或在网页应用的设置里生成。');
@@ -201,11 +203,23 @@ api.get('/articles', wrap(() => svc.listArticles()));
 api.patch('/articles/:id', wrap((req) => { svc.setArticleCategory(req.params.id, req.body.category); return { ok: true }; }));
 api.get('/dict/:word', wrap((req, res) => lookup(req.params.word) || res.status(404).json({ error: '未收录' })));
 
+/* AI context reading and vocabulary consolidation */
+api.get('/contexts/options', wrap((req) => contexts.candidates(req.query)));
+api.get('/contexts', wrap(() => contexts.list()));
+api.post('/contexts', wrap((req) => contexts.create(req.body)));
+api.get('/contexts/:id', wrap((req) => contexts.get(req.params.id)));
+api.post('/contexts/:id/retry', wrap((req) => contexts.retry(req.params.id)));
+api.post('/contexts/:id/reading-answer', wrap((req) => contexts.readingAnswer(req.params.id, req.body.idx, req.body.choice)));
+api.post('/contexts/:id/analysis', wrap((req) => contexts.analysis(req.params.id)));
+api.post('/contexts/:id/consolidate', wrap((req) => contexts.consolidate(req.params.id)));
+
 /* quiz */
+api.get('/review', wrap((req) => svc.reviewSummary(req.query)));
 api.post('/quiz', wrap((req) => svc.startQuiz(req.body)));
 api.get('/quiz', wrap(() => svc.listQuizzes()));
 api.get('/quiz/:id', wrap((req, res) => svc.getQuiz(req.params.id) || res.status(404).json({ error: '不存在' })));
 api.post('/quiz/:id/answer', wrap((req) => svc.answer(req.params.id, req.body.question_id, req.body.choice)));
+api.post('/quiz/:id/retest', wrap((req) => svc.retestAnswer(req.params.id, req.body.question_id, req.body.choice)));
 api.post('/quiz/:id/finish', wrap((req) => svc.finishQuiz(req.params.id)));
 api.get('/wrongbook', wrap((req) => svc.wrongbook(req.query)));
 api.post('/wrongbook/:wordId', wrap((req) => { svc.setMastered(req.params.wordId, !!req.body.mastered); return { ok: true }; }));
