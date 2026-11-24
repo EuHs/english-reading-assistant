@@ -8,6 +8,8 @@ const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math
 
 /* ---------- quiz helpers ---------- */
 export const QUIZ_TYPES = ['cloze', 'ctx', 'zh2en', 'en2zh']; // 单词填空 / 句中词义 / 看中文选单词 / 看单词选中文
+// Increasing intervals inspired by forgetting/spacing research, not a fitted memory model.
+export const REVIEW_MINUTES = [20, 1440, 4320, 10080, 20160, 43200, 86400];
 const blankRe = (surface) => new RegExp(`\\b${String(surface || '').replace(/[^A-Za-z'-]/g, '') || '\\0'}\\b`, 'i');
 // Chinese senses of a gloss: "a. 不情愿的, 勉强的\n[法] 难以处理的" -> 不情愿, 勉强, 难以处理
 export const senses = (text) => [...new Set(String(text || '')
@@ -29,9 +31,10 @@ const sensesOf = (w) => w._senses || (w._senses = senses(glossOf(w)));
 const synonymsOf = (p) => (Array.isArray(p.synonyms) ? p.synonyms : []).map((x) => String(x).toLowerCase().replace(/[^a-z' -]/g, '').trim()).filter(Boolean).slice(0, 30);
 
 export class Service {
-  constructor(db, ai) {
+  constructor(db, ai, { clock = Date.now } = {}) {
     this.db = db;
     this.ai = ai;
+    this.clock = clock;
     this.queue = [];
     this.busy = false;
     this.dictPool = Object.keys(dict.words).filter((w) => w.length >= 4 && w.length <= 12 && /^[a-z]+$/.test(w));
@@ -142,6 +145,7 @@ export class Service {
       if (p.sentence_translation) db.prepare(`UPDATE occurrences SET sentence_translation=? WHERE word_id=? AND article_id=? AND sentence=? AND COALESCE(sentence_translation,'')=''`)
         .run(clip(p.sentence_translation, 1500), w.id, article.id, clip(p.sentence, 1500));
       this.linkRoots(w.id, morphology);
+      db.prepare('INSERT OR IGNORE INTO word_reviews(word_id,due_at) VALUES(?,?)').run(w.id, this.clock());
       return { id: w.id, lemma, created };
     });
     const w = db.prepare('SELECT enriched, forms FROM words WHERE id=?').get(result.id);
@@ -177,21 +181,25 @@ export class Service {
     db.prepare('DELETE FROM roots WHERE id NOT IN (SELECT root_id FROM word_roots)').run();
   }
 
-  wordFilter({ q, category, root, article }) {
+  wordFilter({ q, category, root, article, review }) {
     const where = [], args = [];
     if (q) { where.push('(w.lemma LIKE ? OR w.meaning LIKE ? OR w.translation LIKE ? OR w.id IN (SELECT word_id FROM word_forms WHERE form LIKE ?))'); args.push(`%${q}%`, `%${q}%`, `%${q}%`, `${q}%`); }
     if (category) { where.push('w.id IN (SELECT o.word_id FROM occurrences o JOIN articles a ON a.id=o.article_id WHERE a.category=?)'); args.push(category); }
     if (root) { where.push('w.id IN (SELECT wr.word_id FROM word_roots wr JOIN roots r ON r.id=wr.root_id WHERE r.root=?)'); args.push(root); }
     if (article) { where.push('w.id IN (SELECT word_id FROM occurrences WHERE article_id=?)'); args.push(+article); }
+    if (review === 'due' || review === 'scheduled') {
+      where.push(`w.id IN (SELECT word_id FROM word_reviews WHERE due_at ${review === 'due' ? '<=' : '>'} ?)`);
+      args.push(this.clock());
+    }
     return { sql: where.length ? 'WHERE ' + where.join(' AND ') : '', args };
   }
 
-  listWords({ q, category, root, article, page = 1, size = 50, sort = 'new' } = {}) {
+  listWords({ q, category, root, article, review, page = 1, size = 50, sort = 'new' } = {}) {
     const db = this.db;
-    const f = this.wordFilter({ q, category, root, article });
+    const f = this.wordFilter({ q, category, root, article, review });
     size = Math.min(500, Math.max(1, +size || 50));
     page = Math.max(1, +page || 1);
-    const order = { new: 'w.created_at DESC, w.id DESC', alpha: 'w.lemma ASC', wrong: 'wb.wrong_count DESC NULLS LAST, w.id DESC', freq: 'occ DESC' }[sort] || 'w.id DESC';
+    const order = { new: 'w.created_at DESC, w.id DESC', alpha: 'w.lemma ASC', wrong: 'wb.wrong_count DESC NULLS LAST, w.id DESC', freq: 'occ DESC', due: '(SELECT due_at FROM word_reviews WHERE word_id=w.id), w.id' }[sort] || 'w.id DESC';
     const total = db.prepare(`SELECT COUNT(*) n FROM words w ${f.sql}`).get(...f.args).n;
     const rows = db.prepare(`SELECT w.*, wb.wrong_count, (SELECT COUNT(*) FROM occurrences o WHERE o.word_id=w.id) occ
       FROM words w LEFT JOIN wrongbook wb ON wb.word_id=w.id ${f.sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...f.args, size, (page - 1) * size);
@@ -204,6 +212,7 @@ export class Service {
       id: w.id, lemma: w.lemma, phonetic: w.phonetic, pos: w.pos, translation: w.translation, meaning: w.meaning,
       morphology: J.p(w.morphology, []), forms: J.p(w.forms), tenses: J.p(w.tenses, []), definitions: J.p(w.definitions, []),
       etymology: w.etymology, enriched: !!w.enriched, created_at: w.created_at, wrong_count: w.wrong_count || 0, occ: w.occ,
+      review: this.reviewState(w.id),
       roots: db.prepare('SELECT r.root, r.type, r.meaning, r.origin FROM word_roots wr JOIN roots r ON r.id=wr.root_id WHERE wr.word_id=?').all(w.id),
       categories: db.prepare('SELECT DISTINCT a.category FROM occurrences o JOIN articles a ON a.id=o.article_id WHERE o.word_id=? AND a.category IS NOT NULL').all(w.id).map((r) => r.category),
       forms_seen: db.prepare('SELECT form FROM word_forms WHERE word_id=?').all(w.id).map((r) => r.form),
@@ -354,6 +363,38 @@ export class Service {
     }));
   }
 
+  /* ---------- review schedule ---------- */
+  reviewState(wordId) {
+    const r = this.db.prepare('SELECT * FROM word_reviews WHERE word_id=?').get(+wordId);
+    return r ? { ...r, due: r.due_at <= this.clock(), interval_minutes: REVIEW_MINUTES[r.stage] || 0 } : null;
+  }
+
+  reviewSummary(filters = {}) {
+    const at = this.clock(), f = this.wordFilter(filters);
+    const r = this.db.prepare(`SELECT COUNT(*) total,
+      COALESCE(SUM(r.due_at<=?),0) due,
+      COALESCE(SUM(r.due_at<=? AND r.repetitions=0),0) new_words,
+      COALESCE(SUM(r.due_at<=? AND r.stage=-1 AND r.repetitions>0),0) relearning,
+      COALESCE(SUM(r.due_at>? AND r.due_at<=?),0) next_24h,
+      MIN(CASE WHEN r.due_at>? THEN r.due_at END) next_due_at
+      FROM words w JOIN word_reviews r ON r.word_id=w.id ${f.sql}`)
+      .get(at, at, at, at, at + 86400000, at, ...f.args);
+    return { ...r, server_now: at, intervals_minutes: REVIEW_MINUTES };
+  }
+
+  updateReview(q, correct) {
+    const r = this.reviewState(q.word_id), at = this.clock();
+    // A quiz opened before another attempt must not overwrite that newer schedule.
+    if (!r || r.revision !== q.review_revision) return 'newer';
+    if (correct && r.due_at > at) return 'early';
+    const stage = correct ? Math.min(r.stage + 1, REVIEW_MINUTES.length - 1) : -1;
+    const due = correct ? at + REVIEW_MINUTES[stage] * 60000 : at;
+    this.db.prepare(`UPDATE word_reviews SET stage=?,due_at=?,last_reviewed_at=?,repetitions=repetitions+1,
+      lapses=lapses+?,revision=revision+1,last_question_id=? WHERE word_id=?`)
+      .run(stage, due, at, correct ? 0 : 1, q.id, q.word_id);
+    return 'updated';
+  }
+
   /* ---------- quiz ---------- */
   shortMeaning(w) {
     let m = (w.meaning || '').trim();
@@ -363,15 +404,20 @@ export class Service {
 
   /** `types`: any of QUIZ_TYPES (all when none are given). Each word gets the least-used type it can do;
    * 单词填空 and 句中词义 need an example sentence that contains the word. */
-  startQuiz({ size = 20, category, root, mode = 'all', types } = {}) {
-    size = [20, 50, 80, 100].includes(+size) ? +size : Math.min(100, Math.max(1, +size || 20));
+  startQuiz({ size = 20, category, root, mode = 'all', types, word_ids, context_id } = {}) {
+    size = Math.floor(Math.min(100, Math.max(1, +size || 20)));
     const want = (Array.isArray(types) ? types : String(types || '').split(',')).filter((t) => QUIZ_TYPES.includes(t));
     const chosen = want.length ? [...new Set(want)] : QUIZ_TYPES.slice();
     const db = this.db;
-    const f = this.wordFilter({ category, root });
+    const f = this.wordFilter({ category, root, review: mode === 'due' ? 'due' : '' });
+    if (word_ids != null) {
+      if (!Array.isArray(word_ids) || !word_ids.length || word_ids.length > 100 || word_ids.some((id) => !Number.isSafeInteger(id) || id < 1)) throw Object.assign(new Error('生词范围无效'), { status: 400 });
+      f.sql += `${f.sql ? ' AND' : 'WHERE'} w.id IN (${word_ids.map(() => '?').join(',')})`;
+      f.args.push(...word_ids);
+    }
     const extra = mode === 'wrong' ? `${f.sql ? 'AND' : 'WHERE'} w.id IN (SELECT word_id FROM wrongbook WHERE mastered=0)` : '';
-    const pool = db.prepare(`SELECT w.* FROM words w ${f.sql} ${extra}`).all(...f.args);
-    if (!pool.length) throw Object.assign(new Error(mode === 'wrong' ? '错题集为空' : '该范围内没有生词'), { status: 400 });
+    const pool = db.prepare(`SELECT w.*, r.revision review_revision FROM words w JOIN word_reviews r ON r.word_id=w.id ${f.sql} ${extra} ORDER BY r.due_at,w.id`).all(...f.args);
+    if (!pool.length) throw Object.assign(new Error(mode === 'due' ? '该范围内暂时没有到期生词，可以选择全部生词练习' : mode === 'wrong' ? '错题集为空' : '该范围内没有生词'), { status: 400 });
     const sentenceOf = (w) => {
       const occs = db.prepare("SELECT surface, sentence, sentence_translation, meaning FROM occurrences WHERE word_id=? AND sentence<>''").all(w.id)
         .filter((o) => blankRe(o.surface).test(o.sentence));
@@ -379,7 +425,7 @@ export class Service {
     };
     const used = Object.fromEntries(chosen.map((t) => [t, 0]));
     const items = [];
-    for (const w of shuffle(pool.slice())) {
+    for (const w of mode === 'due' ? pool : shuffle(pool.slice())) {
       if (items.length >= size) break;
       const occ = sentenceOf(w);
       const can = chosen.filter((t) => occ || (t !== 'cloze' && t !== 'ctx'));
@@ -396,9 +442,13 @@ export class Service {
       const qid = db.prepare('INSERT INTO quizzes(size,category,root,mode,total,types) VALUES(?,?,?,?,?,?)').run(size, category || null, root || null, mode, items.length, chosen.join(',')).lastInsertRowid;
       items.forEach(({ w, type, occ }, idx) => {
         const q = this.buildQuestion(w, type, occ, all, sameCat);
-        db.prepare('INSERT INTO quiz_questions(quiz_id,idx,word_id,type,prompt,hint,options,answer) VALUES(?,?,?,?,?,?,?,?)')
-          .run(qid, idx, w.id, type, q.prompt, q.hint, J.s(q.options), q.answer);
+        db.prepare('INSERT INTO quiz_questions(quiz_id,idx,word_id,type,prompt,hint,options,answer,review_revision) VALUES(?,?,?,?,?,?,?,?,?)')
+          .run(qid, idx, w.id, type, q.prompt, q.hint, J.s(q.options), q.answer, w.review_revision);
       });
+      if (context_id) {
+        const r = db.prepare("UPDATE context_studies SET consolidation_quiz_id=?,updated_at=datetime('now') WHERE id=? AND status='ready' AND consolidation_quiz_id IS NULL").run(qid, +context_id);
+        if (!r.changes) throw Object.assign(new Error('语境巩固已经开始，请从历史短文继续'), { status: 409 });
+      }
       return qid;
     });
     return this.getQuiz(quizId, false);
@@ -450,11 +500,12 @@ export class Service {
     const db = this.db;
     const quiz = db.prepare('SELECT * FROM quizzes WHERE id=?').get(+id);
     if (!quiz) return null;
+    quiz.context_id = this.db.prepare('SELECT id FROM context_studies WHERE consolidation_quiz_id=?').get(+id)?.id || null;
     const qs = db.prepare('SELECT q.*, w.lemma, w.phonetic, w.meaning, w.translation FROM quiz_questions q JOIN words w ON w.id=q.word_id WHERE quiz_id=? ORDER BY idx').all(+id);
     const reveal = withAnswers || !!quiz.finished_at;
     quiz.questions = qs.map((q) => ({
       id: q.id, idx: q.idx, type: q.type, prompt: q.prompt, hint: q.hint, options: J.p(q.options, []), chosen: q.chosen, correct: q.correct == null ? null : !!q.correct,
-      ...(reveal || q.chosen != null ? { answer: q.answer, word: { id: q.word_id, lemma: q.lemma, phonetic: q.phonetic, meaning: this.shortMeaning(q) } } : {}),
+      ...(reveal || q.chosen != null ? { answer: q.answer, word: { id: q.word_id, lemma: q.lemma, phonetic: q.phonetic, meaning: this.shortMeaning(q) }, review: this.reviewState(q.word_id) } : {}),
     }));
     return quiz;
   }
@@ -463,8 +514,16 @@ export class Service {
     const db = this.db;
     const q = db.prepare('SELECT * FROM quiz_questions WHERE id=? AND quiz_id=?').get(+questionId, +quizId);
     if (!q) throw Object.assign(new Error('题目不存在'), { status: 404 });
-    if (q.chosen != null) return { correct: !!q.correct, answer: q.answer, already: true };
+    const response = (extra) => {
+      const w = this.getWord(q.word_id);
+      return { correct: !!q.correct, answer: q.answer, chosen: q.chosen, ...extra, review: w.review,
+        word: { id: w.id, lemma: w.lemma, phonetic: w.phonetic, meaning: this.shortMeaning(w), translation: w.translation, roots: w.roots, occurrences: w.occurrences.slice(0, 1) } };
+    };
+    if (q.chosen != null) return response({ already: true });
+    if (db.prepare('SELECT finished_at FROM quizzes WHERE id=?').get(+quizId).finished_at) throw Object.assign(new Error('测验已结束'), { status: 400 });
+    if (!Number.isInteger(choice) || choice < 0 || choice >= J.p(q.options, []).length) throw Object.assign(new Error('选项无效'), { status: 400 });
     const ok = +choice === q.answer ? 1 : 0;
+    let reviewReason;
     tx(db, () => {
       db.prepare("UPDATE quiz_questions SET chosen=?, correct=?, answered_at=datetime('now') WHERE id=?").run(+choice, ok, q.id);
       db.prepare('UPDATE quizzes SET correct=correct+? WHERE id=?').run(ok, +quizId);
@@ -475,15 +534,36 @@ export class Service {
         // three correct answers in a row take a word out of the wrong book
         db.prepare('UPDATE wrongbook SET right_streak=right_streak+1, mastered=CASE WHEN right_streak+1>=3 THEN 1 ELSE mastered END WHERE word_id=?').run(q.word_id);
       }
+      reviewReason = this.updateReview(q, !!ok);
     });
-    const w = this.getWord(q.word_id);
-    return { correct: !!ok, answer: q.answer, word: { id: w.id, lemma: w.lemma, phonetic: w.phonetic, meaning: this.shortMeaning(w), translation: w.translation, roots: w.roots, occurrences: w.occurrences.slice(0, 1) } };
+    q.correct = ok;
+    q.chosen = choice;
+    return response({ review_reason: reviewReason });
+  }
+
+  retestAnswer(quizId, questionId, choice) {
+    const db = this.db;
+    const q = db.prepare('SELECT q.*, z.finished_at FROM quiz_questions q JOIN quizzes z ON z.id=q.quiz_id WHERE q.id=? AND q.quiz_id=?').get(+questionId, +quizId);
+    if (!q) throw Object.assign(new Error('题目不存在'), { status: 404 });
+    if (!q.finished_at || q.correct === 1) throw Object.assign(new Error('请在测验结束后巩固错题'), { status: 400 });
+    if (!Number.isInteger(choice) || choice < 0 || choice >= J.p(q.options, []).length) throw Object.assign(new Error('选项无效'), { status: 400 });
+    const correct = choice === q.answer;
+    const r = this.reviewState(q.word_id);
+    // Seeing the answer and immediately repeating is recovery, not a new spaced success.
+    const recover = correct && r && r.stage === -1 && (r.last_question_id === q.id || (q.chosen == null && r.repetitions === 0 && r.revision === q.review_revision));
+    if (recover) {
+      const at = this.clock();
+      db.prepare(`UPDATE word_reviews SET stage=0,due_at=?,last_reviewed_at=?,repetitions=repetitions+1,
+        revision=revision+1,last_question_id=? WHERE word_id=?`).run(at + REVIEW_MINUTES[0] * 60000, at, q.id, q.word_id);
+    }
+    return { correct, review_updated: !!recover, review: this.reviewState(q.word_id) };
   }
 
   finishQuiz(id) {
     const db = this.db;
     db.prepare("UPDATE quizzes SET finished_at=COALESCE(finished_at, datetime('now')) WHERE id=?").run(+id);
     const quiz = this.getQuiz(id, true);
+    if (!quiz) throw Object.assign(new Error('测验不存在'), { status: 404 });
     quiz.wrong = quiz.questions.filter((q) => q.correct === false || q.chosen == null).map((q) => ({ ...q, detail: this.getWord(q.word.id) }));
     return quiz;
   }
@@ -521,6 +601,7 @@ export class Service {
       correct: one('SELECT COALESCE(SUM(correct),0) n FROM quiz_questions WHERE chosen IS NOT NULL').n,
       wrongWords: one('SELECT COUNT(*) n FROM wrongbook WHERE mastered=0').n,
       mastered: one('SELECT COUNT(*) n FROM wrongbook WHERE mastered=1').n,
+      dueWords: one('SELECT COUNT(*) n FROM word_reviews WHERE due_at<=?', this.clock()).n,
     };
     totals.accuracy = totals.answers ? totals.correct / totals.answers : null;
     const byCategory = CATEGORIES.map((c) => {
@@ -546,7 +627,7 @@ export class Service {
 
   exportAll() {
     const db = this.db;
-    const tables = ['articles', 'words', 'word_forms', 'occurrences', 'roots', 'word_roots', 'phrases', 'phrase_occurrences', 'quizzes', 'quiz_questions', 'wrongbook'];
+    const tables = ['articles', 'words', 'word_forms', 'occurrences', 'roots', 'word_roots', 'phrases', 'phrase_occurrences', 'quizzes', 'quiz_questions', 'wrongbook', 'word_reviews', 'context_studies'];
     return { type: 'era-server-backup', exportedAt: now(), tables: Object.fromEntries(tables.map((t) => [t, db.prepare(`SELECT * FROM ${t}`).all()])) };
   }
 }
